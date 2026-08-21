@@ -53,6 +53,10 @@ QuadPlane::QuadPlane(const char *frame_str) :
         thrust_scale = 0;
     } else if (strstr(frame_str, "-tilthvec")) {
         frame_type = "tilthvec";
+    } else if (strstr(frame_str, "-jt20")) {
+        // JT-20: 4 inner tilting + 4 outer fixed (see SIM_Frame jt20_motors)
+        frame_type = "jt20";
+        thrust_scale = 0;
     } else if (strstr(frame_str, "-tilttri")) {
         frame_type = "tilttri";
         // fwd motor gives zero thrust

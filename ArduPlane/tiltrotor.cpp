@@ -245,6 +245,9 @@ void Tiltrotor::continuous_update(void)
         }
         if (!quadplane.motor_test.running) {
             // the motors are all the way forward, start using them for fwd thrust
+
+            // hal.console->printf(" throttle pure fixwing %.2f \n",
+            //                 (double)current_throttle);
             const uint16_t mask = is_zero(current_throttle)?0U:tilt_mask.get();
             motors->output_motor_mask(current_throttle, mask, plane.rudder_dt);
         }

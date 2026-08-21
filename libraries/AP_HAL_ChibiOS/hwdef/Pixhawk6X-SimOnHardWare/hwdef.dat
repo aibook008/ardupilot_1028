@@ -1,0 +1,19 @@
+# Pixhawk6X Simulation-on-Hardware configuration for VTOL tiltrotor
+
+# 基于不带 ETH 引脚的 Pixhawk6X 变体
+include ../Pixhawk6X-NoETH/hwdef.dat
+include ../include/SimOnHW.inc
+
+# 短名称
+define CHIBIOS_SHORT_BOARD_NAME "Pixhawk6X-SimHW"
+
+# 编译 Plane 固件
+undef AUTOBUILD_TARGETS
+AUTOBUILD_TARGETS Plane
+
+# 指定 tiltrotor 仿真模型
+define AP_SIM_FRAME_CLASS QuadPlane
+define AP_SIM_FRAME_STRING "quadplane-tilthvec"
+
+# 禁用 bootloader 刷写（SimOnHW 不需要）
+define AP_BOOTLOADER_FLASHING_ENABLED 0

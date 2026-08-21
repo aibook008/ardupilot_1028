@@ -294,6 +294,11 @@ class VehicleInfo(object):
                 "default_params_filename": ["default_params/quadplane.parm",
                                             "default_params/quadplane-tilt.parm"],
             },
+            "quadplane-jt20": {
+                "waf_target": "bin/arduplane",
+                "default_params_filename": ["default_params/quadplane.parm",
+                                            "default_params/quadplane-jt20.parm"],
+            },
             "firefly": {
                 "waf_target": "bin/arduplane",
                 "default_params_filename": ["default_params/quadplane.parm",

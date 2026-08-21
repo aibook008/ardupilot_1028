@@ -1,0 +1,36 @@
+# JT-20: inner 4 tilting + outer 4 fixed vertical (from jt_20.sdf)
+# SITL frame: SIM_Frame jt20_motors; -f quadplane-jt20
+# Mixer: Lua custom MotorsMatrix via Q_FRAME_CLASS=15
+# Docs: docs/jt20_coordinate_mapping.md, docs/tilt_servo_mapping_summary.md
+
+Q_ENABLE         1
+Q_FRAME_CLASS    15
+Q_FRAME_TYPE     0
+Q_TILT_TYPE      0
+Q_TILT_YAW_ANGLE 0
+Q_TILT_MASK      15
+Q_ASSIST_SPEED   6
+Q_ANGLE_MAX      4500
+Q_OPTIONS        2097152
+
+
+# Scripting custom mixer
+SCR_ENABLE       1
+
+# Motors 1-8 on SERVO5-12 (motor_offset=4 in SIM_QuadPlane)
+SERVO5_FUNCTION  33
+SERVO6_FUNCTION  34
+SERVO7_FUNCTION  35
+SERVO8_FUNCTION  36
+SERVO9_FUNCTION  37
+SERVO10_FUNCTION 38
+SERVO11_FUNCTION 39
+SERVO12_FUNCTION 40
+
+# Tilt: Left=SERVO13 (pitch_servo 8), Right=SERVO14 (pitch_servo 9)
+SERVO13_FUNCTION 41
+SERVO14_FUNCTION 41
+SERVO13_MIN 1000
+SERVO13_MAX 2000
+SERVO14_MIN 1000
+SERVO14_MAX 2000

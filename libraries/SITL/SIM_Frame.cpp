@@ -97,6 +97,27 @@ static Motor tiltquad[] =
     Motor(AP_MOTORS_MOT_4,  135, AP_MOTORS_MATRIX_YAW_FACTOR_CW,   2),
 };
 
+/*
+  JT-20 style: inner 4 tilting + outer 4 fixed vertical.
+  Angles from jt_20.sdf Gazebo (X fwd, Y left, Z up) → APM (X fwd, Y right, Z down):
+    (x,y,z)_apm = (x, -y, -z); angle = atan2(Y_apm, X_apm).
+  With motor_offset=4, motors use servos[4..11]; pitch_servo 8/9 → servos[12]/[13]
+  (SERVO13/14 = k_tiltMotorLeft/Right). See docs/jt20_coordinate_mapping.md.
+ */
+static Motor jt20_motors[] =
+{
+    // Inner tilting (GZ motor_0..3)
+    Motor(AP_MOTORS_MOT_1,   47.3f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 1, -1, 0, 0, 9, 10, -90), // front-right → Right tilt
+    Motor(AP_MOTORS_MOT_2, -145.3f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 3, -1, 0, 0, 8, 10, -90), // rear-left  → Left tilt
+    Motor(AP_MOTORS_MOT_3,  -47.7f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  4, -1, 0, 0, 8, 10, -90), // front-left → Left tilt
+    Motor(AP_MOTORS_MOT_4,  145.3f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  2, -1, 0, 0, 9, 10, -90), // rear-right → Right tilt
+    // Outer fixed vertical (GZ rotor_4..7)
+    Motor(AP_MOTORS_MOT_5,   74.8f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 5),
+    Motor(AP_MOTORS_MOT_6, -117.0f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 6),
+    Motor(AP_MOTORS_MOT_7,  -74.8f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  7),
+    Motor(AP_MOTORS_MOT_8,  117.0f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  8),
+};
+
 static Motor hexa_motors[] =
 {
     Motor(AP_MOTORS_MOT_1,   0, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  1),
@@ -318,6 +339,7 @@ static Frame supported_frames[] =
     Frame("y6",        6, y6_motors),
     Frame("firefly",   6, firefly_motors),
     Frame("tilt",      4, tiltquad),
+    Frame("jt20",      8, jt20_motors),
 };
 
 // get air density in kg/m^3
