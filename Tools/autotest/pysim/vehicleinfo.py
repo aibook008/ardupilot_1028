@@ -295,6 +295,7 @@ class VehicleInfo(object):
                                             "default_params/quadplane-tilt.parm"],
             },
             "quadplane-jt20": {
+                "model": "quadplane-jt20:Tools/autotest/models/jt20.json",
                 "waf_target": "bin/arduplane",
                 "default_params_filename": ["default_params/quadplane.parm",
                                             "default_params/quadplane-jt20.parm"],

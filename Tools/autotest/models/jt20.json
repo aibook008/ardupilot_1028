@@ -1,0 +1,110 @@
+# JT-20 tiltrotor SITL model
+# From jt_20.sdf (Gazebo). 8 motors: inner 4 tilting, outer 4 fixed vertical.
+# APM axes: X fwd, Y right, Z down. SDF: X fwd, Y left, Z up -> (x,y,z)_apm=(x,-y,-z).
+#
+# Motor order 1..8 = SDF rotor_0..7 (matches scripts/jt20_motor_matrix.lua and
+# libraries/SITL/SIM_Frame.cpp jt20_motors[]).
+# yaw: +1 CW, -1 CCW.
+#
+# NOTE: SITL is launched with "-jt20:Tools/autotest/models/jt20.json" so that
+# Frame::init() loads THIS file (num_motors=8, real mass/positions).
+# Without the json the default 3kg/0.35m model is used and the airframe is
+# under-modeled (4.5kg effective, tiny arms).
+
+{
+    # total airframe mass in kg (SDF sum, includes 10kg body + rotors/motors)
+    "mass" : 10.255,
+
+    # vehicle diameter in m (max motor-to-motor ~1.99m, outer rotors)
+    "diagonal_size" : 1.99,
+
+    # reference test values - used only to estimate drag coefficient.
+    # Set conservative values for a heavy tiltrotor; tune after a steady
+    # flight test if you want better drag estimate.
+    "refSpd" : 15.0,      # m/s
+    "refAngle" : 45.0,    # degrees
+    "refVoltage" : 25.2,  # volts (6S)
+    "refCurrent" : 45.0,  # Amps at reference test (raised: more power -> more thrust)
+    "refAlt" : 0.0,       # meters AMSL
+    "refTempC" : 25.0,
+    "refBatRes" : 0.02,   # BAT.Res estimate
+
+    # full battery voltage (6S)
+    "maxVoltage" : 25.2,
+
+    # battery capacity in Ah, 0 = unlimited
+    "battCapacityAh" : 0.0,
+
+    # MOT_THST_EXPO
+    "propExpo" : 0.65,
+
+    # approx max yaw rate deg/s
+    "refRotRate" : 120.0,
+
+    # hover throttle 0..1. Lower -> higher max thrust. 0.55 couldn't lift 10.255kg
+    # in 00000016 (ThO saturated at 1.0). Set to 0.35 so max thrust ≈ mass*g/0.35.
+    "hoverThrOut" : 0.35,
+
+    "pwmMin" : 1000,
+    "pwmMax" : 2000,
+    "spin_min" : 0.15,
+    "spin_max" : 0.95,
+
+    # motor slew rate (PWM/s)
+    "slew_max" : 150.0,
+
+    # total effective disc area of 8 props in m^2.
+    # Assumed prop dia 0.6 m -> 8*pi/4*0.6^2 ≈ 2.26 (bigger props -> more thrust)
+    "disc_area" : 2.26,
+
+    # momentum drag coefficient
+    "mdrag_coef" : 0.2,
+
+    # number of motors
+    "num_motors" : 8,
+
+    # inertia about CG (approx from SDF base_link inertia; axes approx)
+    # ixx (roll) 2.168, iyy (pitch) 1.242, izz (yaw) 3.016
+    "moment_inertia" : [2.168, 1.242, 3.016],
+
+    # per-motor position (APM, metres), thrust vector (0,0,-1 = up in NED),
+    # yaw factor.
+    #
+    # CG OFFSET FIX: SDF base_link CG is at x=-0.105 (GZ), so the real airframe's
+    # thrust centroid (mean motor x = -0.104) sits almost exactly on CG -> balanced.
+    # But SITL fixes CG at origin and does NOT read the SDF CG, so equal thrust
+    # produced a ~-0.104m nose-down moment (the big takeoff pitch-down in logs
+    # 00000016/17). Shift every motor x by +0.104 so the thrust centroid moves to
+    # x=0, aligning SITL's effective CG with the real airframe.
+    #   new_x = sdf_x + 0.104; y unchanged.
+    # motorN_position: where the thrust is applied in body frame (m).
+    #   APM axes: X forward, Y right, Z down. CG at origin after +0.104 x-shift.
+    # motorN_vector: unit thrust direction in body frame. (0,0,-1) = lift up.
+    # motorN_yaw: reaction-torque sign used by SITL.
+    #   Must match Lua MotorsMatrix yaw factors (this file uses the FLIPPED
+    #   signs that worked with the mixer: M1/2/5/6 = +1, M3/4/7/8 = -1).
+    "motor1_position"  : [0.469,  0.395, 0.0],
+    "motor1_vector"    : [0.0, 0.0, -1.0],
+    "motor1_yaw"       : 1,
+    "motor2_position"  : [-0.466, -0.395, 0.0],
+    "motor2_vector"    : [0.0, 0.0, -1.0],
+    "motor2_yaw"       : 1,
+    "motor3_position"  : [0.464,  -0.395, 0.0],
+    "motor3_vector"    : [0.0, 0.0, -1.0],
+    "motor3_yaw"       : -1,
+    "motor4_position"  : [-0.466, 0.395, 0.0],
+    "motor4_vector"    : [0.0, 0.0, -1.0],
+    "motor4_yaw"       : -1,
+    "motor5_position"  : [0.344,  0.885, 0.0],
+    "motor5_vector"    : [0.0, 0.0, -1.0],
+    "motor5_yaw"       : 1,
+    "motor6_position"  : [-0.346, -0.885, 0.0],
+    "motor6_vector"    : [0.0, 0.0, -1.0],
+    "motor6_yaw"       : 1,
+    "motor7_position"  : [0.344,  -0.885, 0.0],
+    "motor7_vector"    : [0.0, 0.0, -1.0],
+    "motor7_yaw"       : -1,
+    "motor8_position"  : [-0.346, 0.885, 0.0],
+    "motor8_vector"    : [0.0, 0.0, -1.0],
+    "motor8_yaw"       : -1
+}

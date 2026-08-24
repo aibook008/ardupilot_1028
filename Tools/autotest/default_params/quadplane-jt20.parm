@@ -1,7 +1,11 @@
 # JT-20: inner 4 tilting + outer 4 fixed vertical (from jt_20.sdf)
-# SITL frame: SIM_Frame jt20_motors; -f quadplane-jt20
+# SITL frame: SIM_Frame jt20_motors + Tools/autotest/models/jt20.json
 # Mixer: Lua custom MotorsMatrix via Q_FRAME_CLASS=15
 # Docs: docs/jt20_coordinate_mapping.md, docs/tilt_servo_mapping_summary.md
+#
+# IMPORTANT: launch with json model so SITL uses 10.255kg / 1.99m / 8 motors:
+#   ./Tools/autotest/sim_vehicle.py -v ArduPlane -f quadplane-jt20:Tools/autotest/models/jt20.json -w
+# (model values: mass, diagonal_size, num_motors, per-motor positions)
 
 Q_ENABLE         1
 Q_FRAME_CLASS    15
@@ -12,7 +16,7 @@ Q_TILT_MASK      15
 Q_ASSIST_SPEED   6
 Q_ANGLE_MAX      4500
 Q_OPTIONS        2097152
-
+Q_RTL_MODE       3        # RTL always QRTL (VTOL return)
 
 # Scripting custom mixer
 SCR_ENABLE       1
