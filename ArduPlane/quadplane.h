@@ -607,6 +607,8 @@ private:
         FS_RTL=(1<<20),
         DISARMED_TILT_UP=(1<<21),
         SCALE_FF_ANGLE_P=(1<<22),
+        // Align yaw to next nav WP before allowing VTOL→FW transition after takeoff
+        ALIGN_HDG_BEFORE_TRANS=(1<<23),
     };
     bool option_is_set(OPTION option) const {
         return (options.get() & int32_t(option)) != 0;
@@ -629,6 +631,17 @@ private:
     AP_Float takeoff_navalt_min;
     uint32_t takeoff_last_run_ms;
     float takeoff_start_alt;
+
+    // After VTOL takeoff altitude is reached, optionally hold and yaw-align to the
+    // next mission nav waypoint before transition->restart() (Q_OPTIONS bit 23).
+    AP_Float takeoff_yaw_err_deg;   // Q_TF_YAW_ERR
+    AP_Float takeoff_yaw_tmo_s;     // Q_TF_YAW_TMO (warn interval; 0 = warn every 5s)
+    int32_t takeoff_yaw_target_cd;
+    bool takeoff_yaw_target_valid;
+    uint32_t takeoff_yaw_align_start_ms;
+    uint32_t takeoff_yaw_warn_ms;
+    bool get_takeoff_align_yaw_cd(int32_t &yaw_cd) const;
+    bool takeoff_yaw_aligned(void) const;
 
     // oneshot with duration ARMING_DELAY_MS used by quadplane to delay spoolup after arming:
     // ignored unless OPTION_DELAY_ARMING or OPTION_TILT_DISARMED is set

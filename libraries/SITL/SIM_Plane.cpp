@@ -102,6 +102,25 @@ Plane::Plane(const char *frame_str) :
         mass = 2.0;
         coefficient.c_drag_p = 0.05;
     }
+
+    if (strstr(frame_str, "-jt20")) {
+        // JT-20 fixed-wing aero from jt_20.sdf AdvancedLiftDragPlugin.
+        // Override the default (Skywalker) coefficients with the real airframe's.
+        // Geometry: area 0.4761 m^2, AR 10.6383, mac 0.2115.
+        coefficient.s = 0.4761f;
+        coefficient.b = sqrtf(coefficient.s * 10.6383f); // AR*S, ~2.25 m
+        coefficient.c = 0.2115f;
+        // lift / drag / moment from SDF plugin
+        coefficient.c_lift_0 = 0.403f;
+        coefficient.c_lift_a = 7.39f;
+        coefficient.c_drag_p = 0.01887f;  // approx CD0
+        coefficient.oswald = 0.97f;
+        coefficient.alpha_stall = 0.3391f; // 19.4 deg
+        coefficient.c_m_a = -1.06f;        // static stability
+        coefficient.c_m_q = -22.89f;       // pitch damping
+        // aero reference point from SDF (ref_pt -0.126 0 -0.08)
+        coefficient.CGOffset = Vector3f(-0.126f, 0.0f, -0.08f);
+    }
 }
 
 /*

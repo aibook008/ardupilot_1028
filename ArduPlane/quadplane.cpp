@@ -288,6 +288,7 @@ const AP_Param::GroupInfo QuadPlane::var_info[] = {
     // @Bitmask: 20: Force RTL mode-forces RTL mode on rc failsafe in VTOL modes overriding bit 5(USE_QRTL)
     // @Bitmask: 21: Tilt rotor-tilt motors up when disarmed in FW modes (except manual) to prevent ground strikes.
     // @Bitmask: 22: Scale FF by the ratio of VTOL to plane angle P gains in Position 1 phase of transition into VTOL flight as well as reducing VTOL angle P based on airspeed.
+    // @Bitmask: 23: Align heading before transition-after VTOL takeoff altitude is reached, yaw to the next nav waypoint before allowing forward transition
     AP_GROUPINFO("OPTIONS", 58, QuadPlane, options, 0),
 
     AP_SUBGROUPEXTENSION("",59, QuadPlane, var_info2),
@@ -554,7 +555,25 @@ const AP_Param::GroupInfo QuadPlane::var_info2[] = {
     // @Increment: 1
     // @User: Standard
     AP_GROUPINFO("APPROACH_DIST", 39, QuadPlane, approach_distance, 0),
-    
+
+    // @Param: TF_YAW_ERR
+    // @DisplayName: Takeoff yaw align error
+    // @Description: When Q_OPTIONS bit 23 (Align heading before transition) is set, after VTOL takeoff altitude is reached the aircraft must yaw until the heading error to the next nav waypoint is within this many degrees before forward transition is allowed. If there is no next nav waypoint, takeoff completes immediately as before.
+    // @Units: deg
+    // @Range: 1 45
+    // @Increment: 1
+    // @User: Advanced
+    AP_GROUPINFO("TF_YAW_ERR", 40, QuadPlane, takeoff_yaw_err_deg, 15),
+
+    // @Param: TF_YAW_TMO
+    // @DisplayName: Takeoff yaw align warn interval
+    // @Description: When waiting to align heading before transition (Q_OPTIONS bit 23), this is the interval in seconds between GCS warning messages. 0 means warn every 5 seconds. Waiting never forces transition or QLAND; the aircraft keeps hovering and yawing until aligned or the pilot intervenes.
+    // @Units: s
+    // @Range: 0 60
+    // @Increment: 1
+    // @User: Advanced
+    AP_GROUPINFO("TF_YAW_TMO", 41, QuadPlane, takeoff_yaw_tmo_s, 0),
+
     AP_GROUPEND
 };
 
@@ -3159,12 +3178,44 @@ void QuadPlane::takeoff_controller(void)
     run_xy_controller();
 
     set_pilot_yaw_rate_time_constant();
-    attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(plane.nav_roll_cd,
-                                                                  plane.nav_pitch_cd,
-                                                                  get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
+
+    // After takeoff altitude is reached with ALIGN_HDG_BEFORE_TRANS, command
+    // absolute yaw toward the next nav WP while holding height. Otherwise keep
+    // the existing rate-yaw + weathervane behaviour during the climb.
+    bool align_yaw = false;
+    if (option_is_set(OPTION::ALIGN_HDG_BEFORE_TRANS) &&
+        plane.current_loc.alt >= plane.next_WP_loc.alt) {
+        int32_t yaw_cd;
+        if (get_takeoff_align_yaw_cd(yaw_cd)) {
+            takeoff_yaw_target_cd = yaw_cd;
+            takeoff_yaw_target_valid = true;
+            align_yaw = !takeoff_yaw_aligned();
+        }
+    }
+    if (align_yaw) {
+        disable_yaw_rate_time_constant();
+        attitude_control->input_euler_angle_roll_pitch_yaw(plane.nav_roll_cd,
+                                                           plane.nav_pitch_cd,
+                                                           takeoff_yaw_target_cd,
+                                                           true);
+    } else {
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(plane.nav_roll_cd,
+                                                                      plane.nav_pitch_cd,
+                                                                      get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
+    }
 
     float vel_z = wp_nav->get_default_speed_up();
-    if (plane.control_mode == &plane.mode_guided && guided_takeoff) {
+    if (align_yaw) {
+        // Hold altitude while yawing to the next WP before transition.
+        Location origin;
+        if (ahrs.get_origin(origin)) {
+            float pos_z = plane.next_WP_loc.alt - origin.alt;
+            vel_z = 0;
+            pos_control->input_pos_vel_accel_z(pos_z, vel_z, 0);
+        } else {
+            set_climb_rate_cms(0);
+        }
+    } else if (plane.control_mode == &plane.mode_guided && guided_takeoff) {
         // for guided takeoff we aim for a specific height with zero
         // velocity at that height
         Location origin;
@@ -3321,6 +3372,12 @@ bool QuadPlane::do_vtol_takeoff(const AP_Mission::Mission_Command& cmd)
     }
     throttle_wait = false;
 
+    // reset takeoff heading-align gate state
+    takeoff_yaw_target_valid = false;
+    takeoff_yaw_target_cd = 0;
+    takeoff_yaw_align_start_ms = 0;
+    takeoff_yaw_warn_ms = 0;
+
     // set vertical speed and acceleration limits
     pos_control->set_max_speed_accel_z(-get_pilot_velocity_z_max_dn(), pilot_speed_z_max_up*100, pilot_accel_z*100);
     pos_control->set_correction_speed_accel_z(-get_pilot_velocity_z_max_dn(), pilot_speed_z_max_up*100, pilot_accel_z*100);
@@ -3429,6 +3486,39 @@ bool QuadPlane::verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd)
     if (plane.current_loc.alt < plane.next_WP_loc.alt) {
         return false;
     }
+
+    // Optional: after takeoff altitude is reached, hold and yaw-align to the
+    // next nav waypoint before allowing forward transition (Q_OPTIONS bit 23).
+    if (option_is_set(OPTION::ALIGN_HDG_BEFORE_TRANS)) {
+        int32_t yaw_cd;
+        if (get_takeoff_align_yaw_cd(yaw_cd)) {
+            takeoff_yaw_target_cd = yaw_cd;
+            takeoff_yaw_target_valid = true;
+            if (takeoff_yaw_align_start_ms == 0) {
+                takeoff_yaw_align_start_ms = now;
+                gcs().send_text(MAV_SEVERITY_INFO,
+                                "VTOL takeoff: aligning yaw to next WP");
+            }
+            if (!takeoff_yaw_aligned()) {
+                // Keep hovering and yawing; never force transition or QLAND.
+                const uint32_t warn_interval_ms =
+                    is_positive(takeoff_yaw_tmo_s) ? uint32_t(takeoff_yaw_tmo_s * 1000.0f) : 5000U;
+                if (now - takeoff_yaw_warn_ms > warn_interval_ms) {
+                    const int32_t err_cd = wrap_180_cd(takeoff_yaw_target_cd - ahrs.yaw_sensor);
+                    gcs().send_text(MAV_SEVERITY_WARNING,
+                                    "VTOL takeoff: waiting yaw align err=%.0f deg",
+                                    double(err_cd * 0.01f));
+                    takeoff_yaw_warn_ms = now;
+                }
+                return false;
+            }
+            gcs().send_text(MAV_SEVERITY_INFO, "VTOL takeoff: yaw aligned, transitioning");
+        }
+        // No next nav WP: fall through (do not deadlock takeoff-only missions).
+        takeoff_yaw_target_valid = false;
+        takeoff_yaw_align_start_ms = 0;
+    }
+
     transition->restart();
     plane.TECS_controller.set_pitch_max(transition_pitch_max);
     plane.TECS_controller.set_pitch_min(-transition_pitch_max);
@@ -3451,6 +3541,34 @@ bool QuadPlane::verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd)
     plane.auto_state.next_wp_crosstrack = false;
 
     return true;
+}
+
+/*
+  Get yaw target (centi-degrees) for takeoff heading-align gate: bearing from
+  current location to the next nav mission command. Returns false if none.
+ */
+bool QuadPlane::get_takeoff_align_yaw_cd(int32_t &yaw_cd) const
+{
+    AP_Mission::Mission_Command next_nav_cmd;
+    if (!plane.mission.get_next_nav_cmd(plane.mission.get_current_nav_index() + 1, next_nav_cmd)) {
+        return false;
+    }
+    // Skip non-location nav commands (e.g. DELAY) — only align to a location WP.
+    if (next_nav_cmd.content.location.lat == 0 && next_nav_cmd.content.location.lng == 0) {
+        return false;
+    }
+    yaw_cd = plane.current_loc.get_bearing_to(next_nav_cmd.content.location);
+    return true;
+}
+
+bool QuadPlane::takeoff_yaw_aligned(void) const
+{
+    if (!takeoff_yaw_target_valid) {
+        return true;
+    }
+    const int32_t err_cd = wrap_180_cd(takeoff_yaw_target_cd - ahrs.yaw_sensor);
+    const int32_t lim_cd = int32_t(MAX(takeoff_yaw_err_deg.get(), 1.0f) * 100.0f);
+    return labs(err_cd) <= lim_cd;
 }
 
 /*

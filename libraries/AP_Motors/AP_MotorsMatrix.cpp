@@ -16,6 +16,9 @@
 #include <AP_HAL/AP_HAL.h>
 #include "AP_MotorsMatrix.h"
 #include <AP_Vehicle/AP_Vehicle_Type.h>
+#if HAL_LOGGING_ENABLED
+#include <AP_Logger/AP_Logger.h>
+#endif
 
 extern const AP_HAL::HAL& hal;
 
@@ -173,6 +176,31 @@ void AP_MotorsMatrix::output_to_motors()
             }
             break;
     }
+
+#if HAL_LOGGING_ENABLED
+    // Log mix+compensation thrust (0..1) before PWM. Same units as QTUN.ThI.
+    // Rate-limited to 50 Hz so VTOL→FW is covered without flooding the log.
+    if (armed()) {
+        static uint32_t last_mott_ms;
+        const uint32_t now_ms = AP_HAL::millis();
+        if (now_ms - last_mott_ms >= 20) {
+            last_mott_ms = now_ms;
+            AP::logger().WriteStreaming(
+                "MOTT",
+                "TimeUS,Mot1,Mot2,Mot3,Mot4,Mot5,Mot6,Mot7,Mot8",
+                "Qffffffff",
+                AP_HAL::micros64(),
+                (double)_thrust_rpyt_out[0],
+                (double)_thrust_rpyt_out[1],
+                (double)_thrust_rpyt_out[2],
+                (double)_thrust_rpyt_out[3],
+                (double)_thrust_rpyt_out[4],
+                (double)_thrust_rpyt_out[5],
+                (double)_thrust_rpyt_out[6],
+                (double)_thrust_rpyt_out[7]);
+        }
+    }
+#endif
 
     // convert output to PWM and send to each motor
     for (i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {

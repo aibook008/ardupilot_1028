@@ -3,9 +3,9 @@
 # Mixer: Lua custom MotorsMatrix via Q_FRAME_CLASS=15
 # Docs: docs/jt20_coordinate_mapping.md, docs/tilt_servo_mapping_summary.md
 #
-# IMPORTANT: launch with json model so SITL uses 10.255kg / 1.99m / 8 motors:
-#   ./Tools/autotest/sim_vehicle.py -v ArduPlane -f quadplane-jt20:Tools/autotest/models/jt20.json -w
-# (model values: mass, diagonal_size, num_motors, per-motor positions)
+# IMPORTANT: use -f quadplane-jt20 (json is bound in vehicleinfo.py model=).
+#   ./Tools/autotest/sim_vehicle.py -v ArduPlane -f quadplane-jt20 -w --no-mavproxy
+# Do NOT append :path.json on -f or jt20.parm will be dropped.
 
 Q_ENABLE         1
 Q_FRAME_CLASS    15
@@ -15,7 +15,10 @@ Q_TILT_YAW_ANGLE 0
 Q_TILT_MASK      15
 Q_ASSIST_SPEED   6
 Q_ANGLE_MAX      4500
-Q_OPTIONS        2097152
+# bit21 DISARMED_TILT_UP (2097152) + bit23 ALIGN_HDG_BEFORE_TRANS (8388608)
+Q_OPTIONS        10485760
+Q_TF_YAW_ERR     15       # deg: must align to next WP before transition
+Q_TF_YAW_TMO     0        # warn every 5s while waiting; never force transition
 Q_RTL_MODE       3        # RTL always QRTL (VTOL return)
 
 # Scripting custom mixer
