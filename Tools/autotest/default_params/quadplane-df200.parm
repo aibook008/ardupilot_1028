@@ -1,0 +1,122 @@
+# DF-200: inner 4 tilting (40in) + outer 4 fixed vertical (60in)
+# Geometry/aero: docs/数据库_v2.xlsx ; power: docs/电机电池.docx (整机 350kg)
+# SITL: SIM_Frame df200_motors + Tools/autotest/models/df200.json
+# Mixer: Lua custom MotorsMatrix via Q_FRAME_CLASS=15 (scripts/df200_motor_matrix.lua)
+# Docs: docs/vtol_df200.md
+#
+# IMPORTANT: use -f quadplane-df200 (json is bound in vehicleinfo.py model=).
+#   ./Tools/autotest/sim_vehicle.py -v ArduPlane -f quadplane-df200 -w --no-mavproxy
+# Do NOT append :path.json on -f or df200.parm will be dropped.
+# NOTE: frame string must contain "-df200" and SIM_QuadPlane/SIM_Plane must
+# match df200 (avoids jt20 prefix clash) (strstr("-jt20") would also hit "-df200").
+#
+# Restored from logs/00000086.BIN — Excel large-I hover-success set
+# (mass≈380 kg flight, moment_inertia=[783.6,464.3,1052.3]).
+# Do NOT use the small-I P=3/5 tier with this json.
+
+Q_ENABLE         1
+Q_FRAME_CLASS    15
+Q_FRAME_TYPE     0
+Q_TILT_TYPE      0
+Q_TILT_YAW_ANGLE 0
+Q_TILT_MASK      15
+Q_TILT_MAX       75
+Q_ASSIST_SPEED   10
+Q_ASSIST_ANGLE   60
+# bit21 DISARMED_TILT_UP (2097152) + bit23 ALIGN_HDG_BEFORE_TRANS (8388608)
+Q_OPTIONS        10485760
+# 090: TF_YAW_ERR=25 + strong yaw let align finish and reach FW done
+Q_TF_YAW_ERR     25
+Q_TF_YAW_TMO     0
+Q_RTL_MODE       3
+
+Q_TRANSITION_MS 10000
+Q_TILT_RATE_UP  5
+
+# hoverThrOut=0.30 → expect hover ThO near ~0.45; learn will adapt
+Q_M_THST_HOVER   0.45
+Q_M_HOVER_LEARN  2
+Q_M_YAW_HEADROOM 400
+
+Q_A_ANG_RLL_P    3.0
+Q_A_ANG_PIT_P    4.0
+Q_A_ANG_YAW_P    6.0
+
+# Large-I hover tune (matched to Excel moment_inertia); PIT/RLL from 086
+Q_A_RAT_PIT_P    12.0
+Q_A_RAT_PIT_I    0.01
+Q_A_RAT_PIT_D    0.15
+
+Q_A_RAT_RLL_P    15.0
+Q_A_RAT_RLL_I    0.01
+Q_A_RAT_RLL_D    0.15
+
+# 090 yaw boost (with json motor*_yaw=±3) — required to clear align + transition
+Q_A_RAT_YAW_P    1.2
+Q_A_RAT_YAW_I    0.12
+Q_A_RAT_YAW_D    0.02
+
+Q_A_RATE_P_MAX   45
+Q_A_RATE_R_MAX   45
+Q_A_RATE_Y_MAX   90
+Q_A_ACCEL_P_MAX  30000
+Q_A_ACCEL_R_MAX  30000
+Q_A_ACCEL_Y_MAX  27000
+Q_A_THR_MIX_MAX  0.85
+Q_A_THR_MIX_MIN  0.1
+Q_A_INPUT_TC     0.40
+Q_ANGLE_MAX      2000
+Q_PILOT_SPD_UP   1.0
+Q_PILOT_ACCEL_Z  0.8
+
+# Transition / speeds (cruise ~48.6 m/s from 数据库)
+AIRSPEED_CRUISE  48
+AIRSPEED_MIN     30
+AIRSPEED_MAX     60
+ARSPD_USE        1
+
+# Fixed-wing surface / TECS
+SCALING_SPEED    45
+TECS_PITCH_MIN  -10
+TECS_PITCH_MAX   15
+PTCH_LIM_MIN_DEG -15
+PTCH_LIM_MAX_DEG  15
+
+KFF_RDDRMIX      0.5
+RLL2SRV_TCONST   0.5
+PTCH2SRV_TCONST  0.5
+NAVL1_PERIOD     14
+NAVL1_DAMPING    0.75
+
+# Scripting custom mixer
+SCR_ENABLE       1
+
+# Motors 1-8 on SERVO5-12 (motor_offset=4 in SIM_QuadPlane)
+SERVO5_FUNCTION  33
+SERVO6_FUNCTION  34
+SERVO7_FUNCTION  35
+SERVO8_FUNCTION  36
+SERVO9_FUNCTION  37
+SERVO10_FUNCTION 38
+SERVO11_FUNCTION 39
+SERVO12_FUNCTION 40
+
+# Unified tilt (k_motor_tilt=41). APM: current_tilt=0 → vertical → scaled~0 → PWM≈MIN
+# SITL Motor pitch_min/max = -90..+10 maps PWM MIN≈up, MAX≈forward.
+SERVO13_FUNCTION 41
+SERVO14_FUNCTION 41
+SERVO13_MIN 1000
+SERVO13_MAX 2000
+SERVO14_MIN 1000
+SERVO14_MAX 2000
+SERVO13_REVERSED 0
+SERVO14_REVERSED 0
+
+# Battery: ~400 V class (电机电池.docx 表头 ~398 V)
+BATT_MONITOR     4
+BATT_CAPACITY    100000
+Q_M_BAT_VOLT_MAX 420
+Q_M_BAT_VOLT_MIN 360
+Q_M_THST_EXPO    0.65
+Q_M_PWM_MIN      1000
+Q_M_PWM_MAX      2000
