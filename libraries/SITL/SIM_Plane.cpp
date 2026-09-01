@@ -126,8 +126,11 @@ Plane::Plane(const char *frame_str) :
         coefficient.alpha_stall = 0.2443f; // ~14°
         coefficient.c_m_a = -0.487f;       // 1/rad, Cm vs α fit
         coefficient.c_m_q = -19.287f;      // pitch damping
-        // Clp from 动导数 AVL = -0.5873 (not stock -1.0).
-        coefficient.c_l_p = -0.5873f;
+        // Clp from 动导数 AVL = -0.5873. 169: with cmd-flatten (rotor Mtot=0)
+        // the tilt-37 roll divergence STILL occurs, purely from aero La_p.
+        // La_p = qbar*b^2*Clp*p/(2V); at AS48 coefficient ~500, Euler integral
+        // at 1200Hz numerically diverges. Halve Clp to reduce stiffness.
+        coefficient.c_l_p = -0.3f;
         // Isolation (114): VTOL R/P/Y mix already 0 at AS≥25 and Mot span≈0,
         // but still blew at AS≈27. Zero ALL control-surface aero derivatives so
         // aileron/elevator/rudder produce no force/moment. Bare-airframe aero
@@ -175,14 +178,10 @@ Plane::Plane(const char *frame_str) :
         // the mutual excitation, not the brakes.
         // If AS≈27 then survives -> coupling loop confirmed as the wall.
         // If still blows -> look elsewhere (rotor/tilt-stream effects).
+        // Step 1 (after 164): revert c_l_b/c_l_r/c_n_p to 0 (162 aero config)
+        // to separate transition issue from FW control. 164 showed restoring
+        // c_l_r triggered La_p divergence at tilt 36. Keep FW gains (in parm).
         coefficient.c_l_b = 0.0f;
-        // 150: with c_n_b=0 too, yaw lost its weathercock restoring moment -
-        // RATE.Y saturated into a +/-406 deg/s square wave (no heading sense,
-        // only Cnr damping + weak rotor yaw diff). Restore the stock
-        // weathercock (c_n_b=0.25) as the minimal yaw restoring term while
-        // keeping the cross-coupling terms (c_l_r, c_n_p) and dihedral (c_l_b)
-        // at zero. Test: square wave should disappear; divergence (needs
-        // Clr/Cnp loop) should NOT return.
         coefficient.c_n_b = 0.25f;
         coefficient.c_l_r = 0.0f;
         coefficient.c_n_p = 0.0f;

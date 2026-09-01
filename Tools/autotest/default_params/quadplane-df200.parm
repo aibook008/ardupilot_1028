@@ -101,6 +101,19 @@ PTCH2SRV_TCONST  0.5
 NAVL1_PERIOD     14
 NAVL1_DAMPING    0.75
 
+# Fixed-wing attitude control gains (restored after 163 found them all 0:
+# yaw rate r=-54.7 constant, Yout=0, plane spun into ground. These are FW
+# servo-loop gains, separate from SITL aero c_n_r/c_l_b coefficients.)
+YAW2SRV_DAMP     2.0     # yaw rate -> rudder damping (was 0, r unchecked)
+YAW2SRV_SLIP     1.0     # sideslip -> rudder correction (was 0)
+YAW2SRV_RLL      1.0     # roll->rudder coordination
+YAW2SRV_IMAX     1500    # rudder integrator max
+RLL2SRV_RMAX     40      # roll rate limit deg/s (was 0, roll crippled)
+PTCH2SRV_RMAX    40      # pitch rate limit deg/s
+LIM_ROLL_CD      4500    # bank angle limit (45 deg)
+LIM_PITCH_MAX    2000    # max pitch (20 deg)
+LIM_PITCH_MIN    -2500   # min pitch (-25 deg)
+
 # Scripting custom mixer
 SCR_ENABLE       1
 

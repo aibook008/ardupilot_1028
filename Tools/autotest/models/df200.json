@@ -58,33 +58,33 @@
     # M1 FR tilt  ①
     "motor1_position"  : [1.720,  1.315, 0.0],
     "motor1_vector"    : [0.0, 0.0, -1.0],
-    "motor1_yaw"       : 0.5,
+    "motor1_yaw"       : 9,
     # M2 RL tilt  ⑥
     "motor2_position"  : [-1.720, -1.315, 0.0],
     "motor2_vector"    : [0.0, 0.0, -1.0],
-    "motor2_yaw"       : 0.5,
+    "motor2_yaw"       : 9,
     # M3 FL tilt  ⑤
     "motor3_position"  : [1.720, -1.315, 0.0],
     "motor3_vector"    : [0.0, 0.0, -1.0],
-    "motor3_yaw"       : -0.5,
+    "motor3_yaw"       : -9,
     # M4 RR tilt  ②
     "motor4_position"  : [-1.720,  1.315, 0.0],
     "motor4_vector"    : [0.0, 0.0, -1.0],
-    "motor4_yaw"       : -0.5,
+    "motor4_yaw"       : -9,
     # M5 FR vert  ③
     "motor5_position"  : [1.150,  2.732, 0.0],
     "motor5_vector"    : [0.0, 0.0, -1.0],
-    "motor5_yaw"       : 0.5,
+    "motor5_yaw"       : 9,
     # M6 RL vert  ⑧
     "motor6_position"  : [-1.150, -2.732, 0.0],
     "motor6_vector"    : [0.0, 0.0, -1.0],
-    "motor6_yaw"       : 0.5,
+    "motor6_yaw"       : 9,
     # M7 FL vert  ⑦
     "motor7_position"  : [1.150, -2.732, 0.0],
     "motor7_vector"    : [0.0, 0.0, -1.0],
-    "motor7_yaw"       : -0.5,
+    "motor7_yaw"       : -9,
     # M8 RR vert  ④
     "motor8_position"  : [-1.150,  2.732, 0.0],
     "motor8_vector"    : [0.0, 0.0, -1.0],
-    "motor8_yaw"       : -0.5
+    "motor8_yaw"       : -9
 }
