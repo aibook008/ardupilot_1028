@@ -130,6 +130,110 @@ void Motor::calculate_forces(const struct sitl_input &input,
 }
 
 /*
+  overload that also returns torque/force term breakdown for logging
+ */
+void Motor::calculate_forces(const struct sitl_input &input,
+                             uint8_t motor_offset,
+                             Vector3f &torque,
+                             Vector3f &thrust,
+                             const Vector3f &velocity_air_bf,
+                             const Vector3f &gyro,
+                             float air_density,
+                             float voltage,
+                             bool use_drag,
+                             Vector3f &geom_torque,
+                             Vector3f &rotor_tq,
+                             Vector3f &mdrag_force,
+                             float *vel_in,
+                             float *thrust_mag,
+                             Vector3f *mvel)
+{
+    const float pwm = input.servos[motor_offset+servo];
+    float command = pwm_to_command(pwm);
+    float voltage_scale = voltage / voltage_max;
+
+    geom_torque.zero();
+    rotor_tq.zero();
+    mdrag_force.zero();
+    if (vel_in) *vel_in = 0;
+    if (thrust_mag) *thrust_mag = 0;
+    if (mvel) mvel->zero();
+
+    if (voltage_scale < 0.1) {
+        torque.zero();
+        thrust.zero();
+        current = 0;
+        return;
+    }
+
+    uint64_t now_us = AP_HAL::micros64();
+    if (last_calc_us != 0 && slew_max > 0) {
+        float dt = (now_us - last_calc_us)*1.0e-6;
+        float slew_max_change = slew_max * dt;
+        command = constrain_float(command, last_command-slew_max_change, last_command+slew_max_change);
+    }
+    last_calc_us = now_us;
+    last_command = command;
+
+    Vector3f motor_vel = velocity_air_bf;
+    motor_vel += -(position % gyro);
+    if (mvel) *mvel = motor_vel;
+
+    float velocity_in = MAX(0, -motor_vel.projected(thrust_vector).z);
+    if (vel_in) *vel_in = velocity_in;
+    float motor_thrust = calc_thrust(command, air_density, velocity_in, voltage_scale);
+    if (thrust_mag) *thrust_mag = motor_thrust;
+
+    const float yaw_scale = 0.05 * diagonal_size * motor_thrust;
+    Vector3f rotor_torque = thrust_vector * yaw_factor * command * yaw_scale * -1.0;
+    thrust = thrust_vector * motor_thrust;
+
+    float roll = 0, pitch = 0;
+    uint64_t now = AP_HAL::micros64();
+    if (roll_servo >= 0) {
+        uint16_t servoval = update_servo(input.servos[roll_servo+motor_offset], now, last_roll_value);
+        if (roll_min < roll_max) {
+            roll = constrain_float(roll_min + (servoval-1000)*0.001*(roll_max-roll_min), roll_min, roll_max);
+        } else {
+            roll = constrain_float(roll_max + (2000-servoval)*0.001*(roll_min-roll_max), roll_max, roll_min);
+        }
+    }
+    if (pitch_servo >= 0) {
+        uint16_t servoval = update_servo(input.servos[pitch_servo+motor_offset], now, last_pitch_value);
+        if (pitch_min < pitch_max) {
+            pitch = constrain_float(pitch_min + (servoval-1000)*0.001*(pitch_max-pitch_min), pitch_min, pitch_max);
+        } else {
+            pitch = constrain_float(pitch_max + (2000-servoval)*0.001*(pitch_min-pitch_max), pitch_max, pitch_min);
+        }
+    }
+    last_change_usec = now;
+
+    if (!is_zero(roll) || !is_zero(pitch)) {
+        Matrix3f rotation;
+        rotation.from_euler(radians(roll), radians(pitch), 0);
+        thrust = rotation * thrust;
+        rotor_torque = rotation * rotor_torque;
+    }
+
+    if (use_drag) {
+        const float momentum_drag_factor = momentum_drag_coefficient * sqrtf(air_density * true_prop_area);
+        Vector3f momentum_drag;
+        momentum_drag.x = momentum_drag_factor * motor_vel.x * (sqrtf(fabsf(thrust.y)) + sqrtf(fabsf(thrust.z)));
+        momentum_drag.y = momentum_drag_factor * motor_vel.y * (sqrtf(fabsf(thrust.x)) + sqrtf(fabsf(thrust.z)));
+        momentum_drag.z = momentum_drag_factor * motor_vel.z * (sqrtf(fabsf(thrust.x)) + sqrtf(fabsf(thrust.y)) + sqrtf(fabsf(thrust.z)));
+        mdrag_force = momentum_drag;
+        thrust -= momentum_drag;
+    }
+
+    geom_torque = position % thrust;
+    rotor_tq = rotor_torque;
+    torque = geom_torque + rotor_torque;
+
+    float power = power_factor * fabsf(motor_thrust);
+    current = power / MAX(voltage, 0.1);
+}
+
+/*
   update and return current value of a servo. Calculated as 1000..2000
  */
 uint16_t Motor::update_servo(uint16_t demand, uint64_t time_usec, float &last_value) const

@@ -18,6 +18,7 @@
 #include <AP_Vehicle/AP_Vehicle_Type.h>
 #if HAL_LOGGING_ENABLED
 #include <AP_Logger/AP_Logger.h>
+#include <cstdio>  // TEMPORARY: df200_mix.log debug
 #endif
 
 extern const AP_HAL::HAL& hal;
@@ -428,6 +429,40 @@ void AP_MotorsMatrix::output_armed_stabilizing()
     // determine throttle thrust for harmonic notch
     // compensation_gain can never be zero
     _throttle_out = throttle_thrust_best_plus_adj / compensation_gain;
+
+#if HAL_LOGGING_ENABLED
+    // DF-200 SITL debug (TEMPORARY - remove after diagnosis): mixer internals
+    // to /tmp/df200_mix.log, same clock as /tmp/df200_aero.log and
+    // /tmp/df200_rotor.log. 155 showed a persistent front-high/rear-low motor
+    // pattern (cmd 0.36 vs 0.26) even with the Lua factor table all-zero at
+    // AS>=25 - log the mixer inputs to find which term (roll/pitch/yaw thrust,
+    // rpy_scale clipping, throttle adj) writes it.
+    if (armed()) {
+        static uint32_t last_mix_log_ms;
+        const uint32_t now_ms = AP_HAL::millis();
+        if (now_ms - last_mix_log_ms >= 50) {
+            last_mix_log_ms = now_ms;
+            FILE *fp = fopen("/tmp/df200_mix.log", "a");
+            if (fp != nullptr) {
+                fprintf(fp,
+                    "DF200MIX t=%.2f thr_in=%.3f thr_best=%.3f thr_adj=%.3f "
+                    "roll_t=%.4f pitch_t=%.4f yaw_t=%.4f yaw_allow=%.4f "
+                    "rpy_scale=%.4f rpy_lo=%.3f rpy_hi=%.3f "
+                    "lim=%d%d%d%d out=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                    now_ms * 0.001f,
+                    throttle_thrust, throttle_thrust_best_rpy, thr_adj,
+                    roll_thrust, pitch_thrust, yaw_thrust, yaw_allowed,
+                    rpy_scale, rpy_low, rpy_high,
+                    (int)limit.roll, (int)limit.pitch, (int)limit.yaw, (int)limit.throttle_upper,
+                    _thrust_rpyt_out[0], _thrust_rpyt_out[1],
+                    _thrust_rpyt_out[2], _thrust_rpyt_out[3],
+                    _thrust_rpyt_out[4], _thrust_rpyt_out[5],
+                    _thrust_rpyt_out[6], _thrust_rpyt_out[7]);
+                fclose(fp);
+            }
+        }
+    }
+#endif
 
     // check for failed motor
     check_for_failed_motor(throttle_thrust_best_plus_adj);

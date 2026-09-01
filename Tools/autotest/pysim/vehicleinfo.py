@@ -300,6 +300,12 @@ class VehicleInfo(object):
                 "default_params_filename": ["default_params/quadplane.parm",
                                             "default_params/quadplane-jt20.parm"],
             },
+            "quadplane-df200": {
+                "model": "quadplane-df200:Tools/autotest/models/df200.json",
+                "waf_target": "bin/arduplane",
+                "default_params_filename": ["default_params/quadplane.parm",
+                                            "default_params/quadplane-df200.parm"],
+            },
             "firefly": {
                 "waf_target": "bin/arduplane",
                 "default_params_filename": ["default_params/quadplane.parm",

@@ -118,6 +118,29 @@ static Motor jt20_motors[] =
     Motor(AP_MOTORS_MOT_8,  117.0f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  8),
 };
 
+/*
+  DF-200: same topology as JT-20 (inner 4 tilt + outer 4 fixed vertical),
+  geometry from docs/数据库_v2.xlsx 旋翼位置 about hover CG (1.900,0,0.483).
+  Angles = atan2(Y_apm, X_apm). pitch_servo 8/9 → SERVO13/14 with motor_offset=4.
+  Named df200 (not jt200) to avoid Frame::find_frame() / strstr prefix clash with jt20.
+  See docs/vtol_df200.md.
+ */
+static Motor df200_motors[] =
+{
+    // Inner tilting (①⑤②⑥ → FR/RL/FL/RR in JT-20 motor order)
+    // pitch_min/max = 0,-90: PWM MIN → true vertical (0°), PWM MAX → forward (-90°).
+    // Do NOT copy jt20's (10,-90): that makes PWM=1000 a +10° forward bias in SITL.
+    Motor(AP_MOTORS_MOT_1,   37.32f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 1, -1, 0, 0, 9, 0, -90), // ① FR tilt → Right
+    Motor(AP_MOTORS_MOT_2, -142.52f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 3, -1, 0, 0, 8, 0, -90), // ⑥ RL tilt → Left
+    Motor(AP_MOTORS_MOT_3,  -37.32f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  4, -1, 0, 0, 8, 0, -90), // ⑤ FL tilt → Left
+    Motor(AP_MOTORS_MOT_4,  142.52f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  2, -1, 0, 0, 9, 0, -90), // ② RR tilt → Right
+    // Outer fixed vertical (③⑧⑦④)
+    Motor(AP_MOTORS_MOT_5,   67.08f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 5), // ③ FR vert
+    Motor(AP_MOTORS_MOT_6, -112.74f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 6), // ⑧ RL vert
+    Motor(AP_MOTORS_MOT_7,  -67.08f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  7), // ⑦ FL vert
+    Motor(AP_MOTORS_MOT_8,  112.74f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  8), // ④ RR vert
+};
+
 static Motor hexa_motors[] =
 {
     Motor(AP_MOTORS_MOT_1,   0, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  1),
@@ -339,6 +362,7 @@ static Frame supported_frames[] =
     Frame("y6",        6, y6_motors),
     Frame("firefly",   6, firefly_motors),
     Frame("tilt",      4, tiltquad),
+    Frame("df200",     8, df200_motors),
     Frame("jt20",      8, jt20_motors),
 };
 
@@ -570,19 +594,127 @@ void Frame::calculate_forces(const Aircraft &aircraft,
     Vector3f torque;
 
     const float air_density = get_air_density(aircraft.get_location().alt*0.01);
-    const Vector3f gyro = aircraft.get_gyro();
+    Vector3f gyro = aircraft.get_gyro();
 
     Vector3f vel_air_bf = aircraft.get_dcm().transposed() * aircraft.get_velocity_air_ef();
 
     const auto *_sitl = AP::sitl();
+    const bool df200_frame = (name != nullptr && strcmp(name, "df200") == 0);
+    const bool df200_rotor_log = df200_frame;
+    // ISOLATION TEST (161+): the TIMER roll/yaw blow-up is a positive-feedback
+    // loop p/r -> position%gyro -> per-motor mvelz(L-R split) -> velin split
+    // -> calc_thrust(velin^2) -> asymmetric thrust -> geom Mx(same sign as p)
+    // -> p grows -> repeat, saturates in ~0.2s. Data traced every step.
+    // Test A: above AS_HI cut the body-rate contribution to motor airspeed
+    // (zero the gyro passed to Motor::calculate_forces). Physically the
+    // position%gyro term is real, but calc_thrust squares velin and amplifies
+    // the L-R asymmetry into a same-sign Mx (gain>1). If Test A stops the
+    // blow-up -> root cause confirmed. NOT a final fix - diagnosis only.
+    const bool df200_zero_gyro_for_motor =
+        df200_frame &&
+        aircraft.get_velocity_air_ef().length() >= 25.0f;  // AS>=25 only
+    const Vector3f gyro_for_motor = df200_zero_gyro_for_motor ? Vector3f{} : gyro;
+    Vector3f sum_geom, sum_rotor, sum_mdrag;
+    static uint64_t df200_rotor_log_last_ms;
+    // per-motor breakdown for the 154 roll-snap investigation:
+    // which motor's r×F makes the sudden Mx, and are outputs rail-clipped.
+    Vector3f pm_geom[8];
+    Vector3f pm_thrust[8];
+    float pm_cmd[8];
+    float pm_velin[8];
+    float pm_thrustmag[8];
+    Vector3f pm_mvel[8];
+
     for (uint8_t i=0; i<num_motors; i++) {
         Vector3f mtorque, mthrust;
-        motors[i].calculate_forces(input, motor_offset, mtorque, mthrust, vel_air_bf, gyro, air_density, battery->get_voltage(), use_drag);
+        if (df200_rotor_log) {
+            Vector3f geom_tq, rotor_tq, mdrag_f;
+            motors[i].calculate_forces(input, motor_offset, mtorque, mthrust, vel_air_bf, gyro_for_motor, air_density, battery->get_voltage(), use_drag,
+                                       geom_tq, rotor_tq, mdrag_f,
+                                       &pm_velin[i], &pm_thrustmag[i], &pm_mvel[i]);
+            sum_geom += geom_tq;
+            sum_rotor += rotor_tq;
+            sum_mdrag += mdrag_f;
+            if (i < 8) {
+                pm_geom[i] = geom_tq;
+                pm_thrust[i] = mthrust;
+                pm_cmd[i] = motors[i].get_command();
+            }
+        } else {
+            motors[i].calculate_forces(input, motor_offset, mtorque, mthrust, vel_air_bf, gyro_for_motor, air_density, battery->get_voltage(), use_drag);
+        }
         torque += mtorque;
         thrust += mthrust;
         // simulate motor rpm
         if (!is_zero(_sitl->vibe_motor)) {
             rpm[motor_offset+i] = motors[i].get_command() * AP::sitl()->vibe_motor * 60.0f;
+        }
+    }
+
+    // DF-200: rotor force/moment budget ~20 Hz when AS in 20..35.
+    // QuadPlane calls this with use_drag=false, so mdrag terms should be ~0 here;
+    // geometry (r×F) and rotor reaction are the useful split.
+    //   /tmp/df200_rotor.log
+    if (df200_rotor_log) {
+        // Aircraft::airspeed is protected; use body-frame air-relative speed.
+        const float as = aircraft.get_velocity_air_ef().length();
+        if (as >= 20.0f && as <= 55.0f) {
+            const uint64_t now_ms = AP_HAL::millis64();
+            if (now_ms - df200_rotor_log_last_ms >= 50) {
+                df200_rotor_log_last_ms = now_ms;
+                FILE *fp = fopen("/tmp/df200_rotor.log", "a");
+                if (fp != nullptr) {
+                    fprintf(fp,
+                        "DF200ROTOR t=%.2f AS=%.1f use_drag=%d "
+                        "F=%.1f,%.1f,%.1f "
+                        "Mtot=%.1f,%.1f,%.1f "
+                        "Mgeom=%.1f,%.1f,%.1f "
+                        "Mrotor=%.1f,%.1f,%.1f "
+                        "Fmdrag=%.1f,%.1f,%.1f "
+                        "pqr=%.3f,%.3f,%.3f "
+                        "I=%.1f,%.1f,%.1f "
+                        "cmd=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f "
+                        "Mxi=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f "
+                        "Tzi=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f "
+                        "Txi=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f "
+                        "velin=%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f "
+                        "thrmag=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f "
+                        "mvelx=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f "
+                        "mvely=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f "
+                        "mvelz=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+                        now_ms * 1.0e-3,
+                        as,
+                        (int)use_drag,
+                        thrust.x, thrust.y, thrust.z,
+                        torque.x, torque.y, torque.z,
+                        sum_geom.x, sum_geom.y, sum_geom.z,
+                        sum_rotor.x, sum_rotor.y, sum_rotor.z,
+                        sum_mdrag.x, sum_mdrag.y, sum_mdrag.z,
+                        gyro.x, gyro.y, gyro.z,
+                        model.moment_of_inertia.x,
+                        model.moment_of_inertia.y,
+                        model.moment_of_inertia.z,
+                        pm_cmd[0], pm_cmd[1], pm_cmd[2], pm_cmd[3],
+                        pm_cmd[4], pm_cmd[5], pm_cmd[6], pm_cmd[7],
+                        pm_geom[0].x, pm_geom[1].x, pm_geom[2].x, pm_geom[3].x,
+                        pm_geom[4].x, pm_geom[5].x, pm_geom[6].x, pm_geom[7].x,
+                        pm_thrust[0].z, pm_thrust[1].z, pm_thrust[2].z, pm_thrust[3].z,
+                        pm_thrust[4].z, pm_thrust[5].z, pm_thrust[6].z, pm_thrust[7].z,
+                        pm_thrust[0].x, pm_thrust[1].x, pm_thrust[2].x, pm_thrust[3].x,
+                        pm_thrust[4].x, pm_thrust[5].x, pm_thrust[6].x, pm_thrust[7].x,
+                        pm_velin[0], pm_velin[1], pm_velin[2], pm_velin[3],
+                        pm_velin[4], pm_velin[5], pm_velin[6], pm_velin[7],
+                        pm_thrustmag[0], pm_thrustmag[1], pm_thrustmag[2], pm_thrustmag[3],
+                        pm_thrustmag[4], pm_thrustmag[5], pm_thrustmag[6], pm_thrustmag[7],
+                        pm_mvel[0].x, pm_mvel[1].x, pm_mvel[2].x, pm_mvel[3].x,
+                        pm_mvel[4].x, pm_mvel[5].x, pm_mvel[6].x, pm_mvel[7].x,
+                        pm_mvel[0].y, pm_mvel[1].y, pm_mvel[2].y, pm_mvel[3].y,
+                        pm_mvel[4].y, pm_mvel[5].y, pm_mvel[6].y, pm_mvel[7].y,
+                        pm_mvel[0].z, pm_mvel[1].z, pm_mvel[2].z, pm_mvel[3].z,
+                        pm_mvel[4].z, pm_mvel[5].z, pm_mvel[6].z, pm_mvel[7].z);
+                    fclose(fp);
+                }
+            }
         }
     }
 

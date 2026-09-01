@@ -96,6 +96,27 @@ public:
                           float voltage,
                           bool use_drag);
 
+    // Optional breakdown for DF-200 force/moment logging.
+    // geom_torque = r × thrust; rotor_tq = reaction torque along thrust axis.
+    // mdrag_force = momentum-drag force removed from thrust when use_drag.
+    // vel_in/thrust_mag/mvel expose the per-motor calc_thrust inputs/outputs so
+    // the same-cmd-different-thrust question can be answered from data.
+    void calculate_forces(const struct sitl_input &input,
+                          uint8_t motor_offset,
+                          Vector3f &torque,
+                          Vector3f &thrust,
+                          const Vector3f &velocity_air_bf,
+                          const Vector3f &gyro,
+                          float air_density,
+                          float voltage,
+                          bool use_drag,
+                          Vector3f &geom_torque,
+                          Vector3f &rotor_tq,
+                          Vector3f &mdrag_force,
+                          float *vel_in = nullptr,
+                          float *thrust_mag = nullptr,
+                          Vector3f *mvel = nullptr);
+
     uint16_t update_servo(uint16_t demand, uint64_t time_usec, float &last_value) const;
 
     // get current

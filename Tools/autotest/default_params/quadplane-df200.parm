@@ -1,7 +1,8 @@
 # DF-200: inner 4 tilting (40in) + outer 4 fixed vertical (60in)
 # Geometry/aero: docs/数据库_v2.xlsx ; power: docs/电机电池.docx (整机 350kg)
 # SITL: SIM_Frame df200_motors + Tools/autotest/models/df200.json
-# Mixer: Lua custom MotorsMatrix via Q_FRAME_CLASS=15 (scripts/df200_motor_matrix.lua)
+# Mixer: Lua Motors_dynamic via Q_FRAME_CLASS=17 (scripts/df200_motor_matrix.lua)
+# Roll differential fades with airspeed (AS 15→30 → scale 1.0→0.2).
 # Docs: docs/vtol_df200.md
 #
 # IMPORTANT: use -f quadplane-df200 (json is bound in vehicleinfo.py model=).
@@ -14,13 +15,16 @@
 # (mass≈380 kg flight, moment_inertia=[783.6,464.3,1052.3]).
 # Do NOT use the small-I P=3/5 tier with this json.
 
+# SITL: skip pre-arm so we don't have to clear checks every run
+ARMING_CHECK     0
+
 Q_ENABLE         1
-Q_FRAME_CLASS    15
+Q_FRAME_CLASS    17
 Q_FRAME_TYPE     0
 Q_TILT_TYPE      0
 Q_TILT_YAW_ANGLE 0
 Q_TILT_MASK      15
-Q_TILT_MAX       75
+Q_TILT_MAX       30
 Q_ASSIST_SPEED   10
 Q_ASSIST_ANGLE   60
 # bit21 DISARMED_TILT_UP (2097152) + bit23 ALIGN_HDG_BEFORE_TRANS (8388608)
@@ -30,7 +34,7 @@ Q_TF_YAW_ERR     25
 Q_TF_YAW_TMO     0
 Q_RTL_MODE       3
 
-Q_TRANSITION_MS 10000
+Q_TRANSITION_MS 50000
 Q_TILT_RATE_UP  5
 
 # hoverThrOut=0.30 → expect hover ThO near ~0.45; learn will adapt
@@ -68,15 +72,24 @@ Q_A_INPUT_TC     0.40
 Q_ANGLE_MAX      2000
 Q_PILOT_SPD_UP   1.0
 Q_PILOT_ACCEL_Z  0.8
+# 090 had these; without them -w falls back to stock 250/100 and
+# AUTO takeoff saturates Mot on large-I DF-200 (see 093).
+Q_WP_SPEED_UP    100
+Q_WP_SPEED_DN     80
+Q_WP_ACCEL_Z      50
 
 # Transition / speeds (cruise ~48.6 m/s from 数据库)
-AIRSPEED_CRUISE  48
-AIRSPEED_MIN     30
+AIRSPEED_CRUISE  55
+AIRSPEED_MIN     45
 AIRSPEED_MAX     60
 ARSPD_USE        1
 
 # Fixed-wing surface / TECS
-SCALING_SPEED    45
+# WAIT Elev/Ail ≈ FW rate_PID(PDes/RDes) × SS. Soften surfaces around AS≈27.
+# SS ≈ SCALING_SPEED / airspeed (clamped); lower SCALING_SPEED → smaller SS.
+SCALING_SPEED    12
+PTCH_RATE_FF     0.35
+RLL_RATE_FF      0.14
 TECS_PITCH_MIN  -10
 TECS_PITCH_MAX   15
 PTCH_LIM_MIN_DEG -15

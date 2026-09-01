@@ -47,44 +47,44 @@
     "mdrag_coef" : 0.2,
     "num_motors" : 8,
 
-    "moment_inertia" : [783.6, 464.3, 1052.3],
+    "moment_inertia" : [200.6, 464.3, 500.3],
 
-    # Excel 垂起 positions → APM, then x -= mean(x)=0.005 so thrust centroid at CG.
-    # Z kept from Excel (not forced to 0). SIM_Frame df200 uses pitch 0..-90
-    # (true vertical at PWM MIN), so the old +10° Z*Fx nose-up bias is reduced.
+    # Force/moment isolation trial:
+    # - tilt motors Z coplanar at 0 (was front -0.409 / rear -0.944) to kill
+    #   Tilt=30° equal-thrust My_geom ≈ z*Fx bias.
+    # - motor*_yaw = ±0.5 (was ±3) to shrink rotor reaction Mz (~1/6).
+    # Outer verts Z left at Excel -0.270 (Fx=0 when untilted; not the My term).
+    # Expect DF200ROTOR pre-onset: |Mgeom_y| and |Mrotor_z| much smaller.
     # M1 FR tilt  ①
-    "motor1_position"  : [1.720,  1.315, -0.409],
+    "motor1_position"  : [1.720,  1.315, 0.0],
     "motor1_vector"    : [0.0, 0.0, -1.0],
-    # yaw_factor magnitude >1 boosts SITL rotor reaction torque
-    # (yaw_scale = 0.05*diagonal_size*thrust*yaw_factor). Needed so
-    # heading-align at Excel I can finish before pitch/roll saturates.
-    "motor1_yaw"       : 3,
+    "motor1_yaw"       : 0.5,
     # M2 RL tilt  ⑥
-    "motor2_position"  : [-1.720, -1.315, -0.944],
+    "motor2_position"  : [-1.720, -1.315, 0.0],
     "motor2_vector"    : [0.0, 0.0, -1.0],
-    "motor2_yaw"       : 3,
+    "motor2_yaw"       : 0.5,
     # M3 FL tilt  ⑤
-    "motor3_position"  : [1.720, -1.315, -0.409],
+    "motor3_position"  : [1.720, -1.315, 0.0],
     "motor3_vector"    : [0.0, 0.0, -1.0],
-    "motor3_yaw"       : -3,
+    "motor3_yaw"       : -0.5,
     # M4 RR tilt  ②
-    "motor4_position"  : [-1.720,  1.315, -0.944],
+    "motor4_position"  : [-1.720,  1.315, 0.0],
     "motor4_vector"    : [0.0, 0.0, -1.0],
-    "motor4_yaw"       : -3,
+    "motor4_yaw"       : -0.5,
     # M5 FR vert  ③
-    "motor5_position"  : [1.150,  2.732, -0.270],
+    "motor5_position"  : [1.150,  2.732, 0.0],
     "motor5_vector"    : [0.0, 0.0, -1.0],
-    "motor5_yaw"       : 3,
+    "motor5_yaw"       : 0.5,
     # M6 RL vert  ⑧
-    "motor6_position"  : [-1.150, -2.732, -0.270],
+    "motor6_position"  : [-1.150, -2.732, 0.0],
     "motor6_vector"    : [0.0, 0.0, -1.0],
-    "motor6_yaw"       : 3,
+    "motor6_yaw"       : 0.5,
     # M7 FL vert  ⑦
-    "motor7_position"  : [1.150, -2.732, -0.270],
+    "motor7_position"  : [1.150, -2.732, 0.0],
     "motor7_vector"    : [0.0, 0.0, -1.0],
-    "motor7_yaw"       : -3,
+    "motor7_yaw"       : -0.5,
     # M8 RR vert  ④
-    "motor8_position"  : [-1.150,  2.732, -0.270],
+    "motor8_position"  : [-1.150,  2.732, 0.0],
     "motor8_vector"    : [0.0, 0.0, -1.0],
-    "motor8_yaw"       : -3
+    "motor8_yaw"       : -0.5
 }

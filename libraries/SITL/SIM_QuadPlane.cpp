@@ -53,6 +53,11 @@ QuadPlane::QuadPlane(const char *frame_str) :
         thrust_scale = 0;
     } else if (strstr(frame_str, "-tilthvec")) {
         frame_type = "tilthvec";
+    } else if (strstr(frame_str, "-df200")) {
+        // DF-200: same topology as JT-20, geometry from 数据库_v2.xlsx
+        // Named df200 (not jt200) to avoid strstr/find_frame prefix clash with jt20.
+        frame_type = "df200";
+        thrust_scale = 0;
     } else if (strstr(frame_str, "-jt20")) {
         // JT-20: 4 inner tilting + 4 outer fixed (see SIM_Frame jt20_motors)
         frame_type = "jt20";

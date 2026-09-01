@@ -103,7 +103,104 @@ Plane::Plane(const char *frame_str) :
         coefficient.c_drag_p = 0.05;
     }
 
-    if (strstr(frame_str, "-jt20")) {
+    df200_frame = false;
+    df200_aero_log_last_ms = 0;
+
+    if (strstr(frame_str, "-df200")) {
+        df200_frame = true;
+        // DF-200: geometry + longitudinal from xlsx; lateral/dir mostly stock
+        // but roll *control* softened for small-I SITL step-up.
+        //
+        // 083: with stock c_l_deltaa=0.25 on DF wing (S=5.29,b=7.5) and
+        // Ix≈20, full aileron ⇒ α̇_roll ~1e4 deg/s² — C1 and Roll lock
+        // violently. Keep stock weathercock/damping (Cnb/Clp), but cut
+        // aileron effectiveness toward xlsx (raw dCl/dδ·dmax≈0.09).
+        // Named df200 (not jt200) to avoid strstr prefix clash with jt20.
+        coefficient.s = 5.28846f;
+        coefficient.b = 7.5f;
+        coefficient.c = 0.70513f;
+        coefficient.c_lift_0 = 0.311f;     // CL @ α≈0, β=0
+        coefficient.c_lift_a = 6.023f;     // 1/rad, fit α=-2..8°
+        coefficient.c_drag_p = 0.03195f;   // min CD near α=-2°
+        coefficient.oswald = 0.9f;
+        coefficient.alpha_stall = 0.2443f; // ~14°
+        coefficient.c_m_a = -0.487f;       // 1/rad, Cm vs α fit
+        coefficient.c_m_q = -19.287f;      // pitch damping
+        // Clp from 动导数 AVL = -0.5873 (not stock -1.0).
+        coefficient.c_l_p = -0.5873f;
+        // Isolation (114): VTOL R/P/Y mix already 0 at AS≥25 and Mot span≈0,
+        // but still blew at AS≈27. Zero ALL control-surface aero derivatives so
+        // aileron/elevator/rudder produce no force/moment. Bare-airframe aero
+        // (CL, Cma, Clp, ...) kept. If AS≈27 then flies → surfaces were the
+        // problem; if still blows → bare wing/aero or something else.
+        // (xlsx aileron map was c_l_deltaa≈0.091; restore after this test.)
+        // Surfaces: FULL handover (153). 152 first crossed the old AS≈27 wall
+        // (Cnβ restored + Excel Cnr + rudder + coupling loop cut) and reached
+        // "Transition airspeed reached 40.1". But in the TIMER phase
+        // (tilt>30°, AS≈47) roll diverged with Ail saturated at 570 and Elev
+        // at 333 - both still had ZERO aero derivatives, so once the Lua mix
+        // faded (R->0 at AS≥25) roll/pitch had no actuator at all.
+        // Restore xlsx-fitted aileron/elevator effectiveness (NOT stock -
+        // stock c_l_deltaa=0.25 on this wing locked roll violently at small
+        // I; xlsx fits: c_l_deltaa≈0.091, c_m_deltae≈0.42). Rudder trio was
+        // already restored in the 151 heading-control block below.
+        // 155: TIMER roll snap persists even with ALL Lua floors = 0 (mix
+        // factors verified R=P=Y≈0 at AS≥25, isolation worked). New per-motor
+        // log shows a persistent net rotor Mx≈-25 Nm from imperfect pairwise
+        // cancellation (outer pairs at slightly different thrust), while
+        // aileron 0.091 gives only La_da≈-5..-9 Nm - cannot hold the drift.
+        // Raise aileron effectiveness 0.091 -> 0.15 so the FW roll channel
+        // can absorb the residual rotor moment through TIMER to FW done.
+        coefficient.c_l_deltaa = 0.15f;
+        coefficient.c_m_deltae = 0.42f;
+        coefficient.c_l_deltar = -0.037f;
+        coefficient.c_n_deltar = 0.1f;
+        coefficient.c_y_deltar = -0.2f;
+        coefficient.c_lift_deltae = 0.0f;   // keep: camber lift split not fitted
+        coefficient.c_drag_deltae = 0.0f;   // keep: elevator drag ignored
+        coefficient.c_n_deltaa = 0.0f;      // keep: aileron-yaw not fitted
+        coefficient.c_y_deltaa = 0.0f;      // keep: aileron side force ignored
+        // aero ref vs hover CG (user may tune CGOffset for trim)
+        coefficient.CGOffset = Vector3f(-0.154f, 0.0f, 0.0f);
+        // Cross-coupling isolation trial (after 149): pre-onset aero M≈0,
+        // rotor seeds only ~6 Nm, yet yaw->roll divergence still started at
+        // AS≈27.6 with Tilt=30. Hypothesis: dutch-roll loop gains
+        //   β -> roll  (Clβ = c_l_b, stock -0.12)
+        //   β -> yaw   (Cnβ = c_n_b, stock 0.25)
+        //   r  -> roll (Clr = c_l_r, stock 0.14)
+        //   p  -> yaw  (Cnp = c_n_p, stock 0.022)
+        // feed each oscillation cycle while roll/yaw damping is weak
+        // (VTOL mix faded, surfaces zeroed). Zero all four loop terms, KEEP
+        // damping (c_l_p, c_n_r) and side force (c_y_b) so we only remove
+        // the mutual excitation, not the brakes.
+        // If AS≈27 then survives -> coupling loop confirmed as the wall.
+        // If still blows -> look elsewhere (rotor/tilt-stream effects).
+        coefficient.c_l_b = 0.0f;
+        // 150: with c_n_b=0 too, yaw lost its weathercock restoring moment -
+        // RATE.Y saturated into a +/-406 deg/s square wave (no heading sense,
+        // only Cnr damping + weak rotor yaw diff). Restore the stock
+        // weathercock (c_n_b=0.25) as the minimal yaw restoring term while
+        // keeping the cross-coupling terms (c_l_r, c_n_p) and dihedral (c_l_b)
+        // at zero. Test: square wave should disappear; divergence (needs
+        // Clr/Cnp loop) should NOT return.
+        coefficient.c_n_b = 0.25f;
+        coefficient.c_l_r = 0.0f;
+        coefficient.c_n_p = 0.0f;
+        // Heading-control trial (151): Excel 动导数 AVL Cnr = -0.065
+        // (偏航阻尼) replaces stock -1.0 - 15x weaker, so yaw becomes a
+        // lightly-damped spring(Cnβ)-damper(Cnr) mode. Also re-enable the
+        // RUDDER (stock derivatives) so active heading control exists:
+        //   c_n_deltar -> yaw moment from rudder
+        //   c_y_deltar -> side force from rudder
+        //   c_l_deltar -> small roll coupling from rudder (stock, small)
+        // Aileron/elevator stay zeroed to keep the roll path isolated.
+        // This is now a heading-control-ability test: restoring (Cnβ) +
+        // damping (Cnr Excel) + rudder (active) + rotor yaw diff.
+        coefficient.c_n_r = -0.065f;
+        coefficient.c_n_deltar = 0.1f;
+        coefficient.c_y_deltar = -0.2f;
+        coefficient.c_l_deltar = -0.037f;
+    } else if (strstr(frame_str, "-jt20")) {
         // JT-20 fixed-wing aero from jt_20.sdf AdvancedLiftDragPlugin.
         // Override the default (Skywalker) coefficients with the real airframe's.
         // Geometry: area 0.4761 m^2, AR 10.6383, mac 0.2115.
@@ -363,6 +460,81 @@ void Plane::calculate_forces(const struct sitl_input &input, Vector3f &rot_accel
     
     Vector3f force = getForce(aileron, elevator, rudder);
     rot_accel = getTorque(aileron, elevator, rudder, thrust, force);
+
+    // DF-200: dump aero state ~20 Hz when AS in 20..35 to a fixed file so
+    // sim_vehicle's separate gnome-terminal does not need stdout redirect.
+    //   /tmp/df200_aero.log
+    // Columns: time, AS, alpha/beta deg, qbar, body force N, torque Nm, then
+    // moment contributions from alpha (Cma), rate damp (Clp/Cmq/Cnr), sideslip
+    // (Clb/Cnb), surfaces (delta*), and CGOffset cross product.
+    if (df200_frame && airspeed >= 20.0f && airspeed <= 55.0f) {
+        const uint64_t now_ms = AP_HAL::millis64();
+        if (now_ms - df200_aero_log_last_ms >= 50) {
+            df200_aero_log_last_ms = now_ms;
+            const float s = coefficient.s;
+            const float c = coefficient.c;
+            const float b = coefficient.b;
+            const float rho = air_density;
+            const float qbar = 0.5f * rho * sq(airspeed) * s;
+            const float p = gyro.x, q = gyro.y, r = gyro.z;
+            const float alpha = angle_of_attack;
+            // torque term breakdown (Nm) — same formulas as getTorque()
+            const float la_b   = qbar * b * (coefficient.c_l_b * beta);
+            const float la_p   = qbar * b * (coefficient.c_l_p * b * p / (2 * airspeed));
+            const float la_r   = qbar * b * (coefficient.c_l_r * b * r / (2 * airspeed));
+            const float la_da  = qbar * b * (coefficient.c_l_deltaa * aileron);
+            const float la_dr  = qbar * b * (coefficient.c_l_deltar * rudder);
+            const float ma_a   = qbar * c * (coefficient.c_m_a * alpha);
+            const float ma_q   = qbar * c * (coefficient.c_m_q * c * q / (2 * airspeed));
+            const float ma_de  = qbar * c * (coefficient.c_m_deltae * elevator);
+            const float ma_0   = qbar * c * coefficient.c_m_0;
+            const float na_b   = qbar * b * (coefficient.c_n_b * beta);
+            const float na_p   = qbar * b * (coefficient.c_n_p * b * p / (2 * airspeed));
+            const float na_r   = qbar * b * (coefficient.c_n_r * b * r / (2 * airspeed));
+            const float na_da  = qbar * b * (coefficient.c_n_deltaa * aileron);
+            const float na_dr  = qbar * b * (coefficient.c_n_deltar * rudder);
+            const Vector3f &cg = coefficient.CGOffset;
+            const float la_cg = cg.y * force.z - cg.z * force.y;
+            const float ma_cg = -cg.x * force.z + cg.z * force.x;
+            const float na_cg = -cg.y * force.x + cg.x * force.y;
+            const float la = la_b + la_p + la_r + la_da + la_dr + la_cg;
+            const float ma = ma_0 + ma_a + ma_q + ma_de + ma_cg;
+            const float na = na_b + na_p + na_r + na_da + na_dr + na_cg;
+            // attitude + altitude so the log is self-contained (no BIN needed
+            // for force/moment analysis). dcm is body->earth; euler from it.
+            float roll_rad = 0, pitch_rad = 0, yaw_rad = 0;
+            get_dcm().to_euler(&roll_rad, &pitch_rad, &yaw_rad);
+            const float roll_deg = degrees(roll_rad);
+            const float pitch_deg = degrees(pitch_rad);
+            const float yaw_deg = degrees(yaw_rad);
+            const float alt_amsl = location.alt * 0.01f;  // cm -> m
+            FILE *fp = fopen("/tmp/df200_aero.log", "a");
+            if (fp != nullptr) {
+                fprintf(fp,
+                    "DF200AERO t=%.2f AS=%.1f a=%.1f b=%.1f qbar=%.0f "
+                    "F=%.0f,%.0f,%.0f M=%.0f,%.0f,%.0f "
+                    "Ma_a=%.0f Ma_q=%.0f Ma_de=%.0f Ma_cg=%.0f "
+                    "La_b=%.0f La_p=%.0f La_r=%.0f La_da=%.0f "
+                    "Na_b=%.0f Na_r=%.0f Na_dr=%.0f "
+                    "ail=%.2f elev=%.2f rud=%.2f "
+                    "pqr=%.3f,%.3f,%.3f "
+                    "RPY=%.1f,%.1f,%.1f Alt=%.1f\n",
+                    now_ms * 1.0e-3,
+                    airspeed,
+                    degrees(alpha), degrees(beta),
+                    qbar,
+                    force.x, force.y, force.z,
+                    la, ma, na,
+                    ma_a, ma_q, ma_de, ma_cg,
+                    la_b, la_p, la_r, la_da,
+                    na_b, na_r, na_dr,
+                    aileron, elevator, rudder,
+                    p, q, r,
+                    roll_deg, pitch_deg, yaw_deg, alt_amsl);
+                fclose(fp);
+            }
+        }
+    }
 
     if (have_launcher) {
         /*
