@@ -17,6 +17,7 @@
 */
 
 #include "SIM_Motor.h"
+#include "SIM_MotorTable.h"
 #include <AP_Motors/AP_Motors.h>
 
 using namespace SITL;
@@ -65,7 +66,14 @@ void Motor::calculate_forces(const struct sitl_input &input,
     float velocity_in = MAX(0, -motor_vel.projected(thrust_vector).z);
 
     // get thrust for untilted motor
-    float motor_thrust = calc_thrust(command, air_density, velocity_in, voltage_scale);
+    float motor_thrust;
+    if (thrust_model == MOMENTUM) {
+        motor_thrust = calc_thrust(command, air_density, velocity_in, voltage_scale);
+        last_rpm = 0;
+    } else {
+        last_rpm = command * (thrust_model == TABLE_DF200_OUTER_60IN ? 3181.0f : 4200.0f);
+        motor_thrust = calc_thrust_table(command, air_density, velocity_in);
+    }
 
     // the yaw torque of the motor
     const float yaw_scale = 0.05 * diagonal_size * motor_thrust;
@@ -78,7 +86,7 @@ void Motor::calculate_forces(const struct sitl_input &input,
     float roll = 0, pitch = 0;
 
     uint64_t now = AP_HAL::micros64();
-    
+
     // possibly roll and/or pitch the motor
     if (roll_servo >= 0) {
         uint16_t servoval = update_servo(input.servos[roll_servo+motor_offset], now, last_roll_value);
@@ -125,7 +133,14 @@ void Motor::calculate_forces(const struct sitl_input &input,
     torque = (position % thrust) + rotor_torque;
 
     // calculate current
-    float power = power_factor * fabsf(motor_thrust);
+    float power;
+    if (thrust_model == TABLE_DF200_OUTER_60IN) {
+        power = DF200MotorTable::prop60_power(last_rpm);
+    } else if (thrust_model == TABLE_DF200_INNER_40IN) {
+        power = DF200MotorTable::prop40_power(last_rpm, velocity_in);
+    } else {
+        power = power_factor * fabsf(motor_thrust);
+    }
     current = power / MAX(voltage, 0.1);
 }
 
@@ -181,7 +196,14 @@ void Motor::calculate_forces(const struct sitl_input &input,
 
     float velocity_in = MAX(0, -motor_vel.projected(thrust_vector).z);
     if (vel_in) *vel_in = velocity_in;
-    float motor_thrust = calc_thrust(command, air_density, velocity_in, voltage_scale);
+    float motor_thrust;
+    if (thrust_model == MOMENTUM) {
+        motor_thrust = calc_thrust(command, air_density, velocity_in, voltage_scale);
+        last_rpm = 0;
+    } else {
+        last_rpm = command * (thrust_model == TABLE_DF200_OUTER_60IN ? 3181.0f : 4200.0f);
+        motor_thrust = calc_thrust_table(command, air_density, velocity_in);
+    }
     if (thrust_mag) *thrust_mag = motor_thrust;
 
     const float yaw_scale = 0.05 * diagonal_size * motor_thrust;
@@ -229,7 +251,15 @@ void Motor::calculate_forces(const struct sitl_input &input,
     rotor_tq = rotor_torque;
     torque = geom_torque + rotor_torque;
 
-    float power = power_factor * fabsf(motor_thrust);
+    // calculate current
+    float power;
+    if (thrust_model == TABLE_DF200_OUTER_60IN) {
+        power = DF200MotorTable::prop60_power(last_rpm);
+    } else if (thrust_model == TABLE_DF200_INNER_40IN) {
+        power = DF200MotorTable::prop40_power(last_rpm, velocity_in);
+    } else {
+        power = power_factor * fabsf(motor_thrust);
+    }
     current = power / MAX(voltage, 0.1);
 }
 
@@ -328,4 +358,22 @@ float Motor::calc_thrust(float command, float air_density, float velocity_in, fl
     }
 #endif
     return ret;
+}
+
+/*
+  DF-200 table-model thrust. RPM = cmd * RPM_max (linear). Thrust >=0,
+  scaled by air_density / 1.225. Voltage ignored (tables at ~398 V).
+  Caller must have already written last_rpm.
+*/
+float Motor::calc_thrust_table(float command, float air_density, float velocity_in) const
+{
+    float thrust;
+    if (thrust_model == TABLE_DF200_OUTER_60IN) {
+        thrust = DF200MotorTable::prop60_thrust(last_rpm);
+    } else {
+        thrust = DF200MotorTable::prop40_thrust(last_rpm, velocity_in);
+    }
+    // command unused except as documentation that this is a cmd-driven table
+    (void)command;
+    return MAX(0.0f, thrust) * (air_density / 1.225f);
 }

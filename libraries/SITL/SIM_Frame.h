@@ -70,7 +70,15 @@ public:
     void set_mass(float new_mass) {
         mass = new_mass;
     }
-    
+
+    // moment of inertia diag [Ixx, Iyy, Izz] kg*m^2. QuadPlane::update needs
+    // it to convert the Plane aero torque (Nm) to angular accel before adding
+    // to the Frame's rot_accel (rad/s^2) — see the units note in
+    // SIM_QuadPlane.cpp update().
+    const Vector3f &get_inertia(void) const {
+        return model.moment_of_inertia;
+    }
+
 private:
     /*
       parameters that define the multicopter model. Can be loaded from

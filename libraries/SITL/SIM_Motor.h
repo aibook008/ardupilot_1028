@@ -45,6 +45,16 @@ public:
     uint64_t last_change_usec;
     float last_roll_value, last_pitch_value;
 
+    // DF-200 test path: replace the momentum-disc thrust with measured prop
+    // tables (docs/电机电池.docx, see SIM_MotorTable.h). MOMENTUM is the
+    // stock model and stays the default for every other frame.
+    enum ThrustModel { MOMENTUM, TABLE_DF200_OUTER_60IN, TABLE_DF200_INNER_40IN };
+    void set_thrust_model(enum ThrustModel m) { thrust_model = m; }
+    ThrustModel get_thrust_model(void) const { return thrust_model; }
+
+    // last table-model RPM (0 when using MOMENTUM), for logging
+    float get_rpm(void) const { return last_rpm; }
+
     Motor(uint8_t _servo, float _angle, float _yaw_factor, uint8_t _display_order) :
         angle(_angle), // angle in degrees from front
         yaw_factor(_yaw_factor), // positive is clockwise
@@ -143,6 +153,10 @@ public:
     // calculate thrust of motor
     float calc_thrust(float command, float air_density, float velocity_in, float voltage_scale) const;
 
+    // table-model thrust (DF-200 only). voltage ignored: tables are
+    // calibrated at ~398 V. Thrust scaled by air_density/1.225.
+    float calc_thrust_table(float command, float air_density, float velocity_in) const;
+
 private:
     float mot_pwm_min;
     float mot_pwm_max;
@@ -161,6 +175,9 @@ private:
 
     float last_command;
     uint64_t last_calc_us;
+
+    ThrustModel thrust_model = MOMENTUM;
+    float last_rpm = 0;
 
     Vector3f position;
     Vector3f thrust_vector;

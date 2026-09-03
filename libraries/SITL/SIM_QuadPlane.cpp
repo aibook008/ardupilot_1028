@@ -155,10 +155,69 @@ void QuadPlane::update(const struct sitl_input &input)
     throttle = fabsf(throttle);
     battery_current += 20 * throttle;
     
+    // UNITS FIX: Plane::calculate_forces returns the aero TORQUE (Nm) in
+    // rot_accel, but Frame::calculate_forces returns ANGULAR ACCEL (rad/s²,
+    // already divided by moment_of_inertia). Upstream (incl. 4.6.3) sums them
+    // directly — the aero moment is effectively amplified by the inertia
+    // ratio. For most quadplanes the aero torque is small enough to hide it.
+    // DF-200 exposed it (log 177): during tilt-30/AS>12 the real aero pitch
+    // moment is ~-6.3 Nm, numerically equal to the railed rotor pitch accel
+    // +2925/464.3 = +6.30 rad/s², so sumRA_y stayed ≈0 for 5 s while PDes was
+    // railed at +40°/s — the pitch axis was annihilated, the nose fell, the
+    // railed front/rear differential pinned avg throttle at 0.5, T/W at 0.88,
+    // and the aircraft descended into the ground. Convert the plane torque to
+    // angular accel with the frame inertia before summing.
+    const Vector3f &inertia = frame->get_inertia();
+    rot_accel.x /= inertia.x;
+    rot_accel.y /= inertia.y;
+    rot_accel.z /= inertia.z;
+
     rot_accel += quad_rot_accel;
     accel_body += quad_accel_body;
 
+    // DF-200 dynamics bookkeeping: what rot_accel actually reaches
+    // update_dynamics and the gyro response. 176 showed a steady rotor
+    // Mtot_y=+2918 Nm (outputs frozen at 50Hz MOTT, not aliasing) with
+    // Iyy=464.3, i.e. expected q̇=6.28 rad/s², but measured q̇≈0.02 —
+    // the angular book does not close, so log both ends of update_dynamics.
+    //   /tmp/df200_dyn.log
+    // planeRA is the aero angular accel (Plane torque / frame inertia, rad/s²
+    // after the units fix below); quadRA is the Frame output (rad/s²).
+    const bool df200_dyn_log = (frame->name != nullptr && strcmp(frame->name, "df200") == 0);
+    bool df200_dyn_sample = false;
+    Vector3f df200_gyro_pre;
+    if (df200_dyn_log) {
+        static uint64_t df200_dyn_log_last_ms;
+        const uint64_t now_ms = AP_HAL::millis64();
+        if (now_ms - df200_dyn_log_last_ms >= 50) {
+            df200_dyn_log_last_ms = now_ms;
+            df200_dyn_sample = true;
+            df200_gyro_pre = get_gyro();
+        }
+    }
+
     update_dynamics(rot_accel);
+
+    if (df200_dyn_sample) {
+        const Vector3f gyro_post = get_gyro();
+        FILE *fp = fopen("/tmp/df200_dyn.log", "a");
+        if (fp != nullptr) {
+            fprintf(fp, "DF200DYN t=%.2f dt=%.6f gnd=%d "
+                    "planeRA=%.4f,%.4f,%.4f quadRA=%.4f,%.4f,%.4f sumRA=%.4f,%.4f,%.4f "
+                    "gPre=%.5f,%.5f,%.5f gPost=%.5f,%.5f,%.5f\n",
+                    AP_HAL::millis64() * 1.0e-3,
+                    frame_time_us * 1.0e-6,
+                    (int)on_ground(),
+                    (rot_accel - quad_rot_accel).x,
+                    (rot_accel - quad_rot_accel).y,
+                    (rot_accel - quad_rot_accel).z,
+                    quad_rot_accel.x, quad_rot_accel.y, quad_rot_accel.z,
+                    rot_accel.x, rot_accel.y, rot_accel.z,
+                    df200_gyro_pre.x, df200_gyro_pre.y, df200_gyro_pre.z,
+                    gyro_post.x, gyro_post.y, gyro_post.z);
+            fclose(fp);
+        }
+    }
     update_external_payload(input);
 
     // update lat/lon/altitude

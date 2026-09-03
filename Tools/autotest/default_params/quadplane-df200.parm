@@ -24,7 +24,7 @@ Q_FRAME_TYPE     0
 Q_TILT_TYPE      0
 Q_TILT_YAW_ANGLE 0
 Q_TILT_MASK      15
-Q_TILT_MAX       30
+Q_TILT_MAX       45
 Q_ASSIST_SPEED   10
 Q_ASSIST_ANGLE   60
 # bit21 DISARMED_TILT_UP (2097152) + bit23 ALIGN_HDG_BEFORE_TRANS (8388608)
@@ -34,11 +34,12 @@ Q_TF_YAW_ERR     25
 Q_TF_YAW_TMO     0
 Q_RTL_MODE       3
 
-Q_TRANSITION_MS 50000
-Q_TILT_RATE_UP  5
+Q_TRANSITION_MS 500000
+Q_TILT_RATE_UP  10
 
-# hoverThrOut=0.30 → expect hover ThO near ~0.45; learn will adapt
-Q_M_THST_HOVER   0.45
+# prop-table model: T ≈ actuator^2 (T∝RPM²), hover actuator ≈0.68,
+# W/T_max = 3727/7656 ≈ 0.49 → expo=1.0 (pure sqrt inversion), hover thrust 0.49
+Q_M_THST_HOVER   0.49
 Q_M_HOVER_LEARN  2
 Q_M_YAW_HEADROOM 400
 
@@ -47,13 +48,13 @@ Q_A_ANG_PIT_P    4.0
 Q_A_ANG_YAW_P    6.0
 
 # Large-I hover tune (matched to Excel moment_inertia); PIT/RLL from 086
-Q_A_RAT_PIT_P    12.0
+Q_A_RAT_PIT_P    8.0
 Q_A_RAT_PIT_I    0.01
-Q_A_RAT_PIT_D    0.15
+Q_A_RAT_PIT_D    0.05
 
-Q_A_RAT_RLL_P    15.0
+Q_A_RAT_RLL_P    8.0
 Q_A_RAT_RLL_I    0.01
-Q_A_RAT_RLL_D    0.15
+Q_A_RAT_RLL_D    0.05
 
 # 090 yaw boost (with json motor*_yaw=±3) — required to clear align + transition
 Q_A_RAT_YAW_P    1.2
@@ -66,7 +67,7 @@ Q_A_RATE_Y_MAX   90
 Q_A_ACCEL_P_MAX  30000
 Q_A_ACCEL_R_MAX  30000
 Q_A_ACCEL_Y_MAX  27000
-Q_A_THR_MIX_MAX  0.85
+Q_A_THR_MIX_MAX  0.5
 Q_A_THR_MIX_MIN  0.1
 Q_A_INPUT_TC     0.40
 Q_ANGLE_MAX      2000
@@ -81,13 +82,13 @@ Q_WP_ACCEL_Z      50
 # Transition / speeds (cruise ~48.6 m/s from 数据库)
 AIRSPEED_CRUISE  55
 AIRSPEED_MIN     45
-AIRSPEED_MAX     60
+AIRSPEED_MAX     80
 ARSPD_USE        1
 
 # Fixed-wing surface / TECS
 # WAIT Elev/Ail ≈ FW rate_PID(PDes/RDes) × SS. Soften surfaces around AS≈27.
 # SS ≈ SCALING_SPEED / airspeed (clamped); lower SCALING_SPEED → smaller SS.
-SCALING_SPEED    12
+SCALING_SPEED    45
 PTCH_RATE_FF     0.35
 RLL_RATE_FF      0.14
 TECS_PITCH_MIN  -10
@@ -109,10 +110,18 @@ YAW2SRV_SLIP     1.0     # sideslip -> rudder correction (was 0)
 YAW2SRV_RLL      1.0     # roll->rudder coordination
 YAW2SRV_IMAX     1500    # rudder integrator max
 RLL2SRV_RMAX     40      # roll rate limit deg/s (was 0, roll crippled)
-PTCH2SRV_RMAX    40      # pitch rate limit deg/s
+PTCH2SRV_RMAX_UP 40      # pitch rate up limit (was 0, TECS pitch oscillated)
+PTCH2SRV_RMAX_DN 40      # pitch rate down limit (was 0)
+PTCH2SRV_RATE_P  1.0    # pitch rate P gain (default 1.0, raise for big plane)
+PTCH2SRV_RATE_I  0.15    # pitch rate I gain (default, keep)
+PTCH2SRV_RATE_D  0.06    # pitch rate D gain (default 0.08, raise for damping)
 LIM_ROLL_CD      4500    # bank angle limit (45 deg)
 LIM_PITCH_MAX    2000    # max pitch (20 deg)
 LIM_PITCH_MIN    -2500   # min pitch (-25 deg)
+
+# TECS longitudinal control (170: pitch oscillated ±3°, DesPitch swinging)
+TECS_SPDWEIGHT   0.5     # balance speed/height (was 1.0=all-speed, caused oscillation)
+TECS_TIME_CONST  5.0     # TECS response time (was 5.0, too slow for big plane)
 
 # Scripting custom mixer
 SCR_ENABLE       1
@@ -143,6 +152,9 @@ BATT_MONITOR     4
 BATT_CAPACITY    100000
 Q_M_BAT_VOLT_MAX 420
 Q_M_BAT_VOLT_MIN 360
-Q_M_THST_EXPO    0.65
+# prop-table model is T∝actuator² → expo=1.0 makes thrust_to_actuator the
+# exact sqrt inversion (175: 0.65 + hover 0.45 mismatch → rate-loop limit
+# cycle, lim=1111, motors railing 0↔1, avg cmd ~0.5 < hover 0.68)
+Q_M_THST_EXPO    1.0
 Q_M_PWM_MIN      1000
 Q_M_PWM_MAX      2000

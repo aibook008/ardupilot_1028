@@ -124,8 +124,9 @@ Plane::Plane(const char *frame_str) :
         coefficient.c_drag_p = 0.03195f;   // min CD near α=-2°
         coefficient.oswald = 0.9f;
         coefficient.alpha_stall = 0.2443f; // ~14°
-        coefficient.c_m_a = -0.487f;       // 1/rad, Cm vs α fit
-        coefficient.c_m_q = -19.287f;      // pitch damping
+        coefficient.c_m_a = -0.487f;       // 1/rad, Cm vs α fit (Excel β=0 col)
+        coefficient.c_m_q = -19.287f;      // pitch damping (Excel AVL)
+        coefficient.c_m_0 = -0.0069f;      // Cm at α=0 (Excel β=0 col, was stock 0.045)
         // Clp from 动导数 AVL = -0.5873. 169: with cmd-flatten (rotor Mtot=0)
         // the tilt-37 roll divergence STILL occurs, purely from aero La_p.
         // La_p = qbar*b^2*Clp*p/(2V); at AS48 coefficient ~500, Euler integral
@@ -163,8 +164,13 @@ Plane::Plane(const char *frame_str) :
         coefficient.c_drag_deltae = 0.0f;   // keep: elevator drag ignored
         coefficient.c_n_deltaa = 0.0f;      // keep: aileron-yaw not fitted
         coefficient.c_y_deltaa = 0.0f;      // keep: aileron side force ignored
-        // aero ref vs hover CG (user may tune CGOffset for trim)
-        coefficient.CGOffset = Vector3f(-0.154f, 0.0f, 0.0f);
+        // aero ref vs hover CG. xlsx-derived: aeroCenter x=1.954 - CGx 1.900
+        // = -0.054 (docs/vtol_df200.md §4.1). Was hand-tuned to -0.154 for
+        // trim during the small-I experiment (606be35); with the prop-table
+        // motor model that adds a ~340 Nm nose-down moment at AS=60
+        // (181 TIMER phase) that the 0.42 elevator cannot hold. Restore the
+        // data value.
+        coefficient.CGOffset = Vector3f(-0.054f, 0.0f, 0.0f);
         // Cross-coupling isolation trial (after 149): pre-onset aero M≈0,
         // rotor seeds only ~6 Nm, yet yaw->roll divergence still started at
         // AS≈27.6 with Tilt=30. Hypothesis: dutch-roll loop gains
@@ -460,13 +466,12 @@ void Plane::calculate_forces(const struct sitl_input &input, Vector3f &rot_accel
     Vector3f force = getForce(aileron, elevator, rudder);
     rot_accel = getTorque(aileron, elevator, rudder, thrust, force);
 
-    // DF-200: dump aero state ~20 Hz when AS in 20..35 to a fixed file so
-    // sim_vehicle's separate gnome-terminal does not need stdout redirect.
+    // DF-200: dump aero state ~20 Hz, no AS gate (need hover force budget too).
     //   /tmp/df200_aero.log
     // Columns: time, AS, alpha/beta deg, qbar, body force N, torque Nm, then
     // moment contributions from alpha (Cma), rate damp (Clp/Cmq/Cnr), sideslip
     // (Clb/Cnb), surfaces (delta*), and CGOffset cross product.
-    if (df200_frame && airspeed >= 20.0f && airspeed <= 55.0f) {
+    if (df200_frame) {
         const uint64_t now_ms = AP_HAL::millis64();
         if (now_ms - df200_aero_log_last_ms >= 50) {
             df200_aero_log_last_ms = now_ms;
@@ -477,19 +482,22 @@ void Plane::calculate_forces(const struct sitl_input &input, Vector3f &rot_accel
             const float qbar = 0.5f * rho * sq(airspeed) * s;
             const float p = gyro.x, q = gyro.y, r = gyro.z;
             const float alpha = angle_of_attack;
+            // guard the /airspeed terms at hover (AS~0): qbar is 0 there so
+            // the terms are 0 anyway; use a safe divisor to avoid 0*inf=nan.
+            const float as_safe = MAX(airspeed, 1.0f);
             // torque term breakdown (Nm) — same formulas as getTorque()
             const float la_b   = qbar * b * (coefficient.c_l_b * beta);
-            const float la_p   = qbar * b * (coefficient.c_l_p * b * p / (2 * airspeed));
-            const float la_r   = qbar * b * (coefficient.c_l_r * b * r / (2 * airspeed));
+            const float la_p   = qbar * b * (coefficient.c_l_p * b * p / (2 * as_safe));
+            const float la_r   = qbar * b * (coefficient.c_l_r * b * r / (2 * as_safe));
             const float la_da  = qbar * b * (coefficient.c_l_deltaa * aileron);
             const float la_dr  = qbar * b * (coefficient.c_l_deltar * rudder);
             const float ma_a   = qbar * c * (coefficient.c_m_a * alpha);
-            const float ma_q   = qbar * c * (coefficient.c_m_q * c * q / (2 * airspeed));
+            const float ma_q   = qbar * c * (coefficient.c_m_q * c * q / (2 * as_safe));
             const float ma_de  = qbar * c * (coefficient.c_m_deltae * elevator);
             const float ma_0   = qbar * c * coefficient.c_m_0;
             const float na_b   = qbar * b * (coefficient.c_n_b * beta);
-            const float na_p   = qbar * b * (coefficient.c_n_p * b * p / (2 * airspeed));
-            const float na_r   = qbar * b * (coefficient.c_n_r * b * r / (2 * airspeed));
+            const float na_p   = qbar * b * (coefficient.c_n_p * b * p / (2 * as_safe));
+            const float na_r   = qbar * b * (coefficient.c_n_r * b * r / (2 * as_safe));
             const float na_da  = qbar * b * (coefficient.c_n_deltaa * aileron);
             const float na_dr  = qbar * b * (coefficient.c_n_deltar * rudder);
             const Vector3f &cg = coefficient.CGOffset;

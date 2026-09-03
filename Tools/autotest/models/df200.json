@@ -47,7 +47,7 @@
     "mdrag_coef" : 0.2,
     "num_motors" : 8,
 
-    "moment_inertia" : [200.6, 464.3, 500.3],
+    "moment_inertia" : [700.6, 464.3, 1164.3],
 
     # Force/moment isolation trial:
     # - tilt motors Z coplanar at 0 (was front -0.409 / rear -0.944) to kill

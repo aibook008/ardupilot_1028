@@ -1,8 +1,21 @@
 # ArduPilot VTOL 油门计算逻辑详解
 
+| 项 | 内容 |
+|----|------|
+| 代码基线 | 分支 `qhz/plane_4.6.3`（Plane 4.6.x） |
+| 关联 | `tiltrotor_motor_control.md`、`tilt_corridor_vs_apm.md`、`vtol_jt20.md` |
+| 说明 | 行号均已用工具核对；改代码后引用前请重核 |
+
 ## 概述
 
-本文档详细说明 ArduPilot 中 VTOL 倾转旋翼的油门计算流程，重点分析 `set_servos()` 函数中的油门输出逻辑，以及固定翼（TECS）和旋翼（位置控制器）两种油门源的协调机制。
+本文档说明 ArduPilot QuadPlane / Tiltrotor 的油门计算流程，重点包括：
+
+1. `set_servos()` 里固定翼油门（`k_throttle` / TECS）与旋翼油门（`motors->_throttle`）两条并行通道  
+2. 正向过渡 **WAIT / TIMER / DONE** 各自的油门来源  
+3. **JT-20（内四倾转 + 外四固定垂起）** 与「全倾转、无永久 VTOL」在 TIMER 混合上的差异  
+4. `tilt_compensate` 对倾转电机与非倾转电机的不同处理  
+
+**两条油门通道不要混成一条流水线**：旋翼通道经 `motors->output()` → `k_motorN`；固定翼前推经 TECS → `k_throttle` → `set_throttle()` / slew。二者最后都在 `servos_output()` 下硬件。
 
 ## 1. 主循环调用链（一级一级展开）
 
@@ -20,42 +33,37 @@ ArduPlane/ArduPlane.cpp:59-61  调度表定义
 ```
 ArduPlane/servos.cpp:828  Plane::set_servos()
 │
-├─[849] quadplane.update()                    ← QuadPlane 主更新
+├─[849] quadplane.update()                         ← QuadPlane::update (quadplane.cpp:1717)
 │   │
-│   ├─[1759] transition->update()             ← 固定翼模式/过渡阶段
+│   ├─[!in_vtol_mode] transition->update()         ← 固定翼模态下的过渡/辅助 (约 1778)
 │   │   │
-│   │   ├─[1578] quadplane.hold_hover()       ← TRANSITION_AIRSPEED_WAIT
-│   │   │   ├─[1100] multicopter_attitude_rate_update()  ← 姿态环
-│   │   │   ├─[1104] set_climb_rate_cms()
-│   │   │   └─[1106] run_z_controller()
-│   │   │       └─ pos_control->update_z_controller() [AC_PosControl.cpp:989]
-│   │   │           └─ set_throttle_out() → motors->set_throttle()  ← 仅写 motors._throttle
+│   │   ├─ TRANSITION_AIRSPEED_WAIT (1539)
+│   │   │   ├─ assist_climb_rate_cms() (1443) → climb_rate
+│   │   │   ├─ hold_hover(climb_rate) (1597 / 1111)
+│   │   │   │   ├─ multicopter_attitude_rate_update()
+│   │   │   │   ├─ set_climb_rate_cms()
+│   │   │   │   └─ run_z_controller() → update_z_controller()
+│   │   │   │       └─ set_throttle_out() → motors->set_throttle()
+│   │   │   └─ last_throttle = motors->get_throttle() (1615)  ← 供 TIMER 冻结用
 │   │   │
-│   │   ├─[1645] quadplane.hold_stabilize()   ← TRANSITION_TIMER（混合油门，直接设置）
-│   │   │   ├─[1012] multicopter_attitude_rate_update()  ← 姿态环
-│   │   │   └─[1028] attitude_control->set_throttle_out()  ← 直接设置油门（不跑位置环）
+│   │   ├─ TRANSITION_TIMER (1628)
+│   │   │   ├─ throttle_scaled = last_throttle × (1 - t/T) (1642-1643)
+│   │   │   ├─ [仅全倾转] 与 TECS k_throttle 按 tilt ratio 混合 (1655-1661)
+│   │   │   └─ hold_stabilize(throttle_scaled) (1664 / 1028)
+│   │   │       ├─ multicopter_attitude_rate_update()
+│   │   │       └─ set_throttle_out(throttle_scaled)   ← 不跑 Z 位置环
 │   │   │
-│   │   └─[1668] quadplane.motors_output()    ← 过渡阶段电机混控输出
+│   │   └─ motors_output() (1687)                  ← WAIT/TIMER 共用出口
 │   │
-│   ├─[1767] motors_output()                  ← VTOL 模式
-│   │   ├─[2001] attitude_control->rate_controller_run()  ← 角速度 PID → motors._roll/_pitch/_yaw
-│   │   └─[2010] motors->output()
-│   │       ├─ output_armed_stabilizing()     ← 混合矩阵 → _thrust_rpyt_out[]
-│   │       ├─ thrust_compensation()          ← 回调 tilt_compensate()
-│   │       └─ output_to_motors()             ← rc_write() → 仅写入 SRV_Channel（不是硬件输出）
+│   ├─[in_vtol_mode] motors_output() (1786)        ← 纯 VTOL 模态
 │   │
-│   └─[1780] tiltrotor.update()               ← 倾转舵机控制
+│   └─ tiltrotor.update() (1799)                   ← continuous_update：倾转角
+│       └─ motors->output() 链路内 thrust_compensation
+│           └─ tilt_compensate() (tiltrotor.cpp:507)
 │
-├─[857] set_throttle()                        ← 仅处理 k_throttle（固定翼前推油门）
-│   ├─ 电池电压补偿
-│   ├─ 油门限制（min/max）
-│   └─ 油门抑制
-│
-├─[883] throttle_slew_limit(k_throttle)       ← 仅限制 k_throttle 变化率
-│
-└─[929] servos_output()                       ← 唯一真正输出到硬件的地方
-    ├─[1022] SRV_Channels::calc_pwm()         ← scaled → PWM
-    └─[1024] SRV_Channels::output_ch_all()    ← hal.rcout->write()
+├─[857] set_throttle()                             ← 仅 k_throttle（固定翼前推）
+├─ throttle_slew_limit(k_throttle)
+└─[929] servos_output()                            ← 唯一真正写硬件
 ```
 
 ### 1.2.1 关键澄清：`output_to_motors()` 不是最终硬件输出
@@ -139,22 +147,22 @@ update_control_mode() [ArduPlane.cpp:500]
 
 **调用链（两段）**：
 ```
-// 段 A：先算油门（模式 run 或 transition）
-hold_hover(target_climb_rate_cms) [quadplane.cpp:1092]
+// 段 A：先算油门（模式 run 或 transition WAIT）
+hold_hover(target_climb_rate_cms) [quadplane.cpp:1111]
   ├─ multicopter_attitude_rate_update()     ← 姿态目标
   ├─ set_climb_rate_cms()
-  └─ run_z_controller() [quadplane.cpp:1106]
+  └─ run_z_controller()
       └─ pos_control->update_z_controller() [AC_PosControl.cpp:989]
           ├─ 位置环 / 速度环 / 加速度环
           └─ set_throttle_out() [AC_AttitudeControl_Multi.cpp:350]
               └─ motors->set_throttle()     ← 只写 motors._throttle
 
 // 段 B：再混控并写 SRV（set_servos → quadplane.update）
-motors_output() [quadplane.cpp:1767 / 1946]
+motors_output() [quadplane.cpp:1687 或 1786 / 1965]
   ├─ rate_controller_run()                  ← 角速度 PID
   └─ motors->output()
       ├─ output_armed_stabilizing()
-      ├─ thrust_compensation() / tilt_compensate
+      ├─ thrust_compensation() / tilt_compensate (tiltrotor.cpp:507)
       └─ output_to_motors() → rc_write()    ← 写 k_motorN 到 SRV_Channel
 
 // 段 C：统一硬件输出
@@ -175,59 +183,341 @@ servos_output() [servos.cpp:929]
 - `Q_P_VELZ_P`：垂直速度 P 增益
 - `Q_P_ACCZ_P`：垂直加速度 P 增益
 
-### 2.3 过渡模式（关键！）
+### 2.3 过渡模式总览
 
-**调用链**：
+正向过渡状态机（`SLT_Transition::update`，固定翼模态下由 `QuadPlane::update` 调用）：
+
 ```
-set_servos() [servos.cpp:828]
-  └─ quadplane.update() [servos.cpp:849]
-      └─ transition->update() [quadplane.cpp:1759]
-          │
-          ├─ TRANSITION_AIRSPEED_WAIT:
-          │   └─ hold_hover(climb_rate_cms) [quadplane.cpp:1578]
-          │       └─ run_z_controller() → 位置环算油门
-          │
-          ├─ TRANSITION_TIMER: [quadplane.cpp:1636-1645]
-          │   ├─ throttle_scaled = last_throttle × transition_scale
-          │   ├─ 全倾转时：与 TECS 的 k_throttle 按 tilt ratio 混合
-          │   └─ hold_stabilize(throttle_scaled) [quadplane.cpp:1645]
-          │       ├─ multicopter_attitude_rate_update()  ← 姿态
-          │       └─ set_throttle_out(throttle_scaled)   ← 直接设油门，不跑位置环
-          │
-          └─ motors_output() [quadplane.cpp:1668]
-              └─ rate_controller_run() + motors->output() → 写 k_motorN
+AIRSPEED_WAIT ──V>AIRSPEED_MIN──► TIMER ──时间到/fully_fwd──► DONE
+   hold_hover                         hold_stabilize              VTOL 停转
+   Z 环闭环油门                        开环衰减油门
 ```
 
-**核心代码**：
+| 阶段 | 旋翼总油门来源 | 姿态 | 倾转角 θ | JT-20 注意 |
+|------|----------------|------|----------|------------|
+| **WAIT** | `hold_hover` → Z 位置/速度环 | 多旋翼姿态环 | ≤ `Q_TILT_MAX`，跟前飞油门 | 内外四同一集体油门；内四另乘 \(1/\cos\theta\) |
+| **TIMER** | `last_throttle×(1-t/T)` → `hold_stabilize` | 仍稳姿态 | 强制 `slew(前飞角)` | **不做** tilt–TECS 油门混合（有永久 VTOL） |
+| **DONE** | VTOL spool 关闭 | — | 前飞位 | 外四停；倾转电机可当推进 |
+
+详细展开见 **§2.4 WAIT**、**§2.5 TIMER**。
+
+### 2.4 WAIT 阶段油门（TRANSITION_AIRSPEED_WAIT）
+
+#### 2.4.1 控制意图
+
+空速未达标：用旋翼**托住飞机并稳住姿态**，同时内四在 `Q_TILT_MAX` 内倾转，用前向分量加速，直到 \(V>\texttt{AIRSPEED\_MIN}\)。
+
+#### 2.4.2 总油门怎么来（闭环，不是手写 mg）
+
+```
+assist_climb_rate_cms()                    [quadplane.cpp:1443]
+  └─ 自动油门模态：altitude_error_cm × 0.1
+     或 FBW：俯仰/油门估爬升率；2s 斜坡；限幅
+        │
+        ▼
+hold_hover(climb_rate)                     [1111]
+  ├─ multicopter_attitude_rate_update()
+  ├─ set_climb_rate_cms()
+  └─ run_z_controller()
+      └─ pos_control->update_z_controller()  [AC_PosControl.cpp:989]
+          └─ set_throttle_out() → motors->set_throttle()
+```
+
+物理上：Z 环为对抗重力、跟踪爬升率指令，把 collective 油门抬到需要的值——**等效「按重力/高度误差算出油门」**，但是串级 PID，不是开环 \(T=mg\)。
+
+倾转 tiltrotor 在 WAIT 里通常不刻意用旋翼爬高（`LEVEL_TRANSITION` 对非 tiltrotor 会压爬升率；tiltrotor 不压，以免高迎角低 VTOL 推力，见约 1588–1596 行注释）。
+
+每次 WAIT 末尾：
+
 ```cpp
-// quadplane.cpp:1636-1642
-if (tiltrotor.enabled() && !tiltrotor.has_vtol_motor() && !tiltrotor.has_fw_motor()) {
-    // 全倾转构型：混合两个油门
-    const float ratio = (current_tilt - airspeed_reached_tilt) 
-                        / (get_fully_forward_tilt() - airspeed_reached_tilt);
-    
-    const float fw_throttle = MAX(SRV_Channels::get_output_scaled(SRV_Channel::k_throttle), 0) * 0.01;
-    
-    // 混合公式
-    throttle_scaled = constrain_float(
-        throttle_scaled * (1.0 - ratio) + fw_throttle * ratio,
-        0.0, 1.0
-    );
+last_throttle = motors->get_throttle();   // 1615：冻结值留给 TIMER
+```
+
+#### 2.4.3 倾转角（与油门并行）
+
+`tiltrotor.continuous_update()`：在 `assisted_flight` 且尚未到 TIMER 时，θ 跟前飞油门（TECS/`k_throttle` 或 VFWD）走，且 **θ ≤ Q_TILT_MAX**（`tiltrotor.cpp` 约 328–334 行）。  
+速率受 `Q_TILT_RATE_*` 的 `slew()` 限制。
+
+#### 2.4.4 混控后：内四 / 外四（JT-20）
+
+`motors_output()` → `motors->output()` → `tilt_compensate()`（`tiltrotor.cpp:507`）。
+
+固定翼过渡方向（`!in_vtol_mode()`）：
+
+| 电机 | 补偿 | 推力方向 | WAIT 角色 |
+|------|------|----------|-----------|
+| **外四**（不在 tilt_mask） | ×1 | 始终向上 | 主要垂向托举 |
+| **内四**（tilt_mask） | ×\(1/\cos\theta\) | 倾角 θ | 补偿后垂向 + 几何前向加速 |
+
+另有：随 tilt 减弱内四滚转差动、按 \(\sin\theta\) 加倾转差动偏航（见 `tilt_compensate_angle`）。
+
+```
+WAIT 油门链（旋翼通道）:
+
+  Z 环 collective
+       │
+       ▼
+  MotorsMatrix 分到 8 电机（含姿态差动）
+       │
+       ├─ 外四 ×1
+       └─ 内四 × 1/cosθ
+       │
+       ▼
+  物理分解：内四 → Fz=T cosθ, Fx=T sinθ
+```
+
+#### 2.4.5 WAIT 与「重力」说法的精确表述
+
+| 口语 | 精确含义 |
+|------|----------|
+| 「油门由重力算出来」 | Z 环闭环维持垂向加速度≈0（或跟踪爬升率），集体油门隐含平衡重量 |
+| 「不是开环 mg」 | 无 `throttle = mass*g/...` 公式；有传感器反馈与 hover 油门学习 |
+| 「tilt 再补偿」 | 仅倾转电机指令放大，使混控在垂直假设下仍够垂向分量 |
+
+### 2.5 TIMER 阶段油门（TRANSITION_TIMER）
+
+#### 2.5.1 控制意图（先澄清一个易错点）
+
+**不是「油门降到 0 → 整机没前推、没动力」。**
+
+TIMER 衰减的是 **多旋翼集体油门（垂向辅助）**，前提是空速已过 `AIRSPEED_MIN`、机翼已能分担升力。与此同时：
+
+1. **θ 被强制往前打**（`slew(前飞角)`）→ 内四剩余推力里 **前向分量 \(T\sin\theta\) 占比变大**  
+2. **TECS 仍在算 `k_throttle`**（能量/空速），固定翼舵面仍在工作  
+3. θ 到全前飞 → `fully_fwd()` → **DONE**，此后倾转电机走纯 FW 路径，用 TECS 经 `output_motor_mask` 做前推  
+
+所以 TIMER 是 **撤垂向辅助 + 把推力矢量转到前飞 + 把推进权交给 TECS**，不是空窗掉动力。
+
+#### 2.5.2 旋翼集体油门：开环时间衰减
+
+```cpp
+// quadplane.cpp:1642-1664
+transition_scale = (T - t) / T;                  // T = Q_TRANSITION_MS
+throttle_scaled  = last_throttle * transition_scale;
+throttle_scaled  = max(throttle_scaled, 0.01f); // 地板，避免姿态环电机完全停转
+
+// 仅当：tiltrotor 且 !has_vtol_motor() 且 !has_fw_motor()
+//   throttle_scaled = (1-r)*throttle_scaled + r*fw_throttle;
+// JT-20 有外四永久 VTOL → 不进入该混合
+
+hold_stabilize(throttle_scaled);
+```
+
+`hold_stabilize`（1028）：姿态环 + **直接** `set_throttle_out`，**不跑 Z 环**。
+
+| | WAIT | TIMER |
+|--|------|-------|
+| 函数 | `hold_hover` | `hold_stabilize` |
+| 旋翼集体油门 | Z 环闭环 | `last_throttle×时间因子`（开环衰减） |
+| 衰减含义 | — | **撤垂向托举辅助**（机翼已接上） |
+| 前向动力 | 内四 \(T\sin\theta\)（θ≤TILT_MAX） | 内四 \(T\sin\theta\) 且 **θ→90°**；TECS 在旁等待接棒 |
+
+#### 2.5.3 倾转角与前向力（动力为什么还在）
+
+一进 TIMER（`tiltrotor.cpp` 323–327）：
+
+```cpp
+slew(get_forward_flight_tilt());  // 目标全前飞，只受 RATE 限制
+```
+
+| 量 | TIMER 中的变化 | 对动力的含义 |
+|----|----------------|--------------|
+| 集体油门 \(T\) | 时间上减小 | 垂向辅助减少（外四尤其如此） |
+| 倾转角 θ | RATE 限制下增大→90° | \(\sin\theta\uparrow\)：剩余推力更多变成前推 |
+| 内四前向力 | \(\sim T\cdot\sin\theta\)（再经混控/补偿） | **不会**随 \(T\) 同比掉光 |
+| TECS `k_throttle` | 持续计算 | DONE / 纯 FW 后经 mask 接到倾转电机 |
+
+直观：刚进 TIMER 时 θ 约在 `Q_TILT_MAX`，还有明显垂向；TIMER 末 θ≈90°，很小的集体油门也几乎全是前向，然后 DONE 换成 TECS 前推。
+
+#### 2.5.4 JT-20：TIMER 内四 vs 外四
+
+| | 外四 | 内四 |
+|--|------|------|
+| 油门指令 | 同一套衰减 collective | 同一套衰减 + \(1/\cos\theta\) |
+| 方向 | 一直向上 | θ→90° |
+| 衰减时失去的 | **垂向托举**（正是 TIMER 要撤的） | 垂向分量；**前向分量靠倾角接住** |
+| TECS 写入电机 | 无（不在 tilt_mask） | TIMER 内仍走 MC 混控；**fully_fwd/DONE 后**才 `output_motor_mask(TECS)` |
+| 角色 | 垂直余量按时间撤掉 | 矢量转到前飞，再交给 TECS |
+
+TIMER 期间 `assisted_flight==true`，`continuous_update` **不会**走「纯 FW + `output_motor_mask(k_throttle)`」分支（该分支要求 `!assisted_flight`，见 `tiltrotor.cpp` 222 行）。  
+因此 JT-20 在 TIMER **内部**的前推，主要是 **倾转几何下的 MC 推力**；TECS 接棒发生在 **fully_fwd → DONE / 离开 assist** 之后。
+
+#### 2.5.5 全倾转构型的 TIMER 混合（对比，非 JT-20）
+
+当 `!has_vtol_motor() && !has_fw_motor()` 时，TIMER 内就把 TECS 混进同一套电机油门，接棒更早、更平滑：
+
+\[
+r=\frac{\theta-\theta_{\mathrm{as}}}{\theta_{\mathrm{fwd}}-\theta_{\mathrm{as}}},\quad
+throttle=(1-r)\,throttle_{vtol衰减}+r\,throttle_{FW}
+\]
+
+| 时刻 | ratio | 油门来源 |
+|------|-------|---------|
+| 刚进 TIMER | 0 | 100% 衰减旋翼油门 |
+| 中间 | 0.5 | 旋翼与 TECS 各半 |
+| θ→前飞 | 1 | 100% 固定翼油门 |
+
+**JT-20（`Q_TILT_MASK=15`，外四永久 VTOL）不走此分支**——不是「没有前推」，而是前推接棒路径不同（几何前推 → DONE 后 TECS mask）。
+
+### 2.5.6 各电机混控后油门日志 MOTT（转 PWM 前，0~1）
+
+`QTUN.ThI/ThO` 是**集体油门**。各电机在混控 + `tilt_compensate` 之后、转 PWM 之前的量是：
+
+```text
+AP_MotorsMatrix::_thrust_rpyt_out[i]   // 0~1，与 ThI 同量纲
+```
+
+固件已在 `AP_MotorsMatrix::output_to_motors()` 里、`thrust_to_actuator()` / `rc_write()` **之前**写 **`MOTT`**（armed 时约 50 Hz）：
+
+| 字段 | 含义 |
+|------|------|
+| `TimeUS` | 时间戳 |
+| `Mot1`…`Mot8` | 电机 1…8 的 `_thrust_rpyt_out` |
+
+JT-20：`Mot1`…`Mot8` ↔ `RCOU.C5`…`C12`。  
+用途：直接看倾转补偿后内四/外四差；后续功率可用 `P_i=f(Mot_i)`（盘模型）或实机 `ESC.Volt*Curr`。  
+旧 log 无 `MOTT` 时，仍可用 `RCOU` + `Q_M_SPIN_*/THST_EXPO` 反推近似值。
+
+### 2.6 DONE
+
+- `spool SHUT_DOWN`，永久 VTOL（外四）停  
+- `assisted_flight` 结束且 `!in_vtol_mode` 时，`continuous_update` 走纯 FW：倾转电机打满前飞，**`output_motor_mask(k_throttle)`** 用 TECS 做前推（`tiltrotor.cpp` 222–253）  
+- 外四不在 mask → DONE 后外四保持关闭  
+
+### 2.6.1 实测：切 FW 瞬间掉高 ~5 m + TECS 油门「未及时接棒」（00000023）
+
+> 日志坑先记一条：**`QTUN.Alt` 在 t≈101.8（Trn=2 入口）后停录，到 160.4 才恢复**。看 FW 阶段高度必须用 `AHR2.Alt`（AMSL）/ `BARO.Alt` / `TECS.h`，不要用 `QTUN.Alt`，否则会误判「高度卡住没掉」。
+
+#### 现象（AHR2/BARO/TECS.h 三源一致）
+
+Trn 1->2 入口（t≈101.57，倾转刚到 90）：
+
+| t | BARO.Alt | TECS.h | Tecs.th | CTUN.ThO | Aspd |
+|----|----------|--------|---------|----------|------|
+| 100.5 | 20.5 | 20.6 | 1.00 | 100 | 13 |
+| 101.5 | 19.8 | 20.0 | 0.79 | 83.7 | 19 |
+| 102.0 | 18.3 | 18.3 | 0.75 | 76.2 | 23 |
+| 103.0 | 15.3 | 15.2 | 0.56 | 58.3 | 28.6 |
+| 103.5 | **15.0** | 15.0 | 0.46 | 47.9 | 30 |
+| 105.0 | 18.1 | 18.1 | 0.17 | 18.7 | 31 |
+| 106.5 | 20.7 | 20.6 | 0.00 | 0 | 29 |
+| 108–110 | 17–19 | 17–19 | 0 | 0 | 29（二次掉高）|
+
+- 入口 1.5 s 内 BARO 从 19.8 掉到 15.0，**约 5 m**
+- `AHR2` 算的掉高 5.12 m，`BARO` 5.3 m，一致
+- 之后 TECS 把油门拉回，高度回 20.6；但 106.5–110 油门再次 0，又二次掉到 17
+
+#### 代码级原因：TECS 油门为何「衰减 + 没及时加上去」
+
+不是 TECS 没在算，是**它的积分被反复清、且 PD 项在切换瞬间算出来本就低**，导致前飞油门跟不上旋翼升力撤除的速率。
+
+**(1) WAIT 阶段反复清 TECS 油门积分**（`quadplane.cpp:1609`）
+
+```cpp
+if (quadplane.tiltrotor.enabled() && !quadplane.tiltrotor.has_fw_motor()) {
+    // tilt rotors without dedicated fw motors do not have forward throttle output in this stage
+    // prevent throttle I wind up
+    plane.TECS_controller.reset_throttle_I();   // 每拍把 _integTHR_state = 0
 }
 ```
 
-**混合比例 `ratio` 的含义**：
+`reset_throttle_I()`（`AP_TECS.h:97`）直接 `_integTHR_state = 0`。WAIT 期间 VTOL 为主、TECS 不该输出前推，于是**每帧清零**。后果：进 TIMER/DONE 时 TECS 积分是 0，要重新累积，**接棒有延迟**。
 
-| 时刻 | current_tilt | ratio | 油门来源 |
-|------|-------------|-------|---------|
-| 空速刚达标 | airspeed_reached_tilt | 0.0 | 100% 旋翼油门 |
-| 过渡中间 | 50% 倾转 | 0.5 | 50% 旋翼 + 50% 固定翼 |
-| 过渡完成 | fully_forward_tilt | 1.0 | 100% 固定翼油门 |
+**(2) TECS 油门 = PD + FF + 积分，切换瞬间三项都偏低**（`AP_TECS.cpp:759–802`）
 
-**物理含义**：
-- 过渡早期：机翼升力不足，主要靠旋翼维持高度
-- 过渡中期：机翼逐渐产生升力，旋翼逐步转为前飞推力
-- 过渡晚期：机翼完全承担升力，旋翼完全提供前飞推力
+```cpp
+_throttle_dem = (_STE_error + STEdot_error * throttle_damp) * K_STE2Thr + ff_throttle;  // PD+FF
+_integTHR_state = _integTHR_state + (_STE_error * _get_i_gain()) * _DT * K_STE2Thr;      // 积分（被清过）
+...
+_throttle_dem = _throttle_dem + _integTHR_state;                                          // 最终 = PD+FF+积分
+```
+
+- `ff_throttle = throttle_cruise + STEdot_dem/K_thr2STE`：起飞/过渡瞬间能量误差刚转正，FF 不大
+- 积分项被 WAIT 清零，要从 0 累
+- 结果：TECS 算出的 `_throttle_dem` 在切换瞬间就是 0.4~0.8（不是 1.0），且要靠速率限制慢慢爬
+
+**(3) 油门速率限制进一步压住爬升**（`AP_TECS.cpp:784–798`）
+
+```cpp
+int8_t throttle_slewrate = aparm.throttle_slewrate;   // THR_SLEWRATE
+if (throttle_slewrate != 0) {
+    const float thrRateIncr = _DT * (_THRmaxf - _THRminf) * throttle_slewrate * 0.01f;
+    _throttle_dem = constrain_float(_throttle_dem,
+                                    _last_throttle_dem - thrRateIncr,
+                                    _last_throttle_dem + thrRateIncr);
+}
+```
+
+即每拍油门增量受 `THR_SLEWRATE` 限。配合积分从 0 起步，TECS 油门**爬得比旋翼撤升力慢**。
+
+**(4) 旋翼侧是「开环时间衰减」，撤得干脆**（`quadplane.cpp:1643`）
+
+```cpp
+throttle_scaled = last_throttle * transition_scale;   // 按 Q_TRANSITION_MS 线性衰减到 0.01
+```
+
+旋翼集体油门按 `last_throttle × (1−t/T)` 线性掉，**和 TECS 是两条独立链路**。JT-20 有外四永久 VTOL，又**不走** TIMER 内 `throttle_scaled = (1−r)*MC + r*TECS` 那条混合（`quadplane.cpp:1655` 的 `!has_vtol_motor()` 条件不满足）。
+
+#### 失效机理（一句话）
+
+> 旋翼升力按时间线性撤除（快），TECS 前飞油门因**积分被 WAIT 反复清零 + FF 偏低 + 速率限制**而爬得慢；JT-20 又不走 TIMER 内 MC↔TECS 混合 -> 切换瞬间总推力（旋翼垂托↓ + 前飞↑）出现塌陷 -> 掉高 ~5 m。等积分重建、油门爬到 0.7+ 才接住。
+
+#### 该看哪些日志量（避免 QTUN 坑）
+
+| 阶段 | 高度源 | 油门源 |
+|------|--------|--------|
+| VTOL/WAIT/TIMER | `QTUN.Alt` 可用 | `QTUN.ThO`（旋翼集体） |
+| **FW 及之后** | **`AHR2.Alt` / `BARO.Alt` / `TECS.h`**（QTUN 停录） | `TECS.th`（需求）/ `CTUN.ThO`（实输出）/ `AETR.Thr` |
+| 全程连续 | `AHR2` / `BARO` | `TECS.th` |
+
+#### 缓解方向
+
+- **延长 TIMER**：`Q_TRANSITION_MS`（默认 5000）调大，让旋翼撤得更慢
+- **倾转速率**：`Q_TILT_RATE_UP/DN` 调慢，给机翼升力建立时间
+- **`THR_SLEWRATE`**：调大或设 0，让 TECS 油门爬得快
+- **不要在 WAIT 清 TECS 积分**（代码级，更激进）：保留小量积分预载，但风险是 WAIT 期 TECS 误输出前推
+- **JT-20 也走 TIMER 内 MC↔TECS 混合**（代码级）：放宽 `has_vtol_motor()` 条件或单独给 JT-20 一条 ratio 淡入
+
+### 2.7 风险项：JT-20 前飞油门源硬切换（与倾转走廊同类缺口）
+
+#### 2.7.1 现象
+
+倾转打满 / 离开 assist 进入纯前飞时，内四油门源发生切换：
+
+```
+TIMER 内：  衰减 MC 集体油门 → 混控 → ×1/cosθ
+    ↓  fully_fwd / DONE / !assisted_flight
+纯 FW：    TECS k_throttle → output_motor_mask(tilt_mask)
+```
+
+全倾转构型在 TIMER 内用 tilt ratio **提前把 TECS 混进同一套油门**，注释写明目的就是 *remove a step change*（`quadplane.cpp` 1655–1661）。  
+**JT-20 有外四永久 VTOL，不走该混合** → 切换处缺少交叉淡入。
+
+`continuous_update` 对 TECS 侧仅有 `tilt_max_change` 速率限制；**already fully_fwd 时直接 `current_throttle = TECS`**（`tiltrotor.cpp` 237–238），不能保证与 TIMER 末 MC 指令数值连续。
+
+#### 2.7.2 风险等级与后果
+
+| ID | 风险 | 可能后果 | 与走廊关系 |
+|----|------|----------|------------|
+| **R-THR-01** | MC→TECS 油门台阶 | 内四推力突变 → 过载、俯仰扰动、空速抖动 | 与「无 σ–V 中线调度」同属**过渡轨迹开环、缺平滑交接** |
+| **R-THR-02** | TIMER 末 MC 已很低、TECS 巡航油门偏高（或相反） | 上跳加速或下跳掉速 | 走廊要求的 \(T_i(\theta),P(\theta)\) **在切换点不连续** |
+| **R-THR-03** | 切换时刻依赖 fully_fwd / assist，与 `Q_TRANSITION_MS`、RATE 不同步 | 同一套参数下仿真/试飞难复现 | 与走廊「时间表倾转 ≠ 气动中线」同类 |
+
+本质同一类问题：**APM 用状态机 + 速率限制“蹭”过渡，不保证 (θ,V,推力) 沿设计走廊连续。**  
+见 `tilt_corridor_vs_apm.md` 缺口 G2–G4；本条记为推力轴上的对称缺口 **G6（油门交接不连续）**。
+
+#### 2.7.3 缓解（设计级，待立项）
+
+| 优先级 | 措施 | 说明 |
+|--------|------|------|
+| P0 | 仿真打点 | TIMER 末记录内四 PWM/推力 vs DONE 后首拍 TECS mask；量化台阶 ΔT、Δa_x |
+| P1 | 参数对齐 | 使打满 θ 时 MC 衰减末值接近 TECS 巡航需求；对齐 `Q_TRANSITION_MS` 与 `Q_TILT_RATE_DN` |
+| P2 | 软件淡入 | JT-20 在 TIMER 末或 DONE 初按时间/θ 对内四做 MC↔TECS 交叉淡入（类全倾转 ratio，但不要求去掉外四） |
+| P2 | 走廊调度 | \(\theta_{\mathrm{cmd}}=f(V)\) + 显式 \(T_i\) 曲线，使切换点落在走廊中线连续段（catch-up G4 联动） |
+
+#### 2.7.4 对甲表述（脱敏）
+
+> 一期混合倾转构型在「旋翼辅助撤出 → 固定翼前推接管」处依赖状态切换；完整方案需增加推力交接平滑与倾转角–空速走廊监视，避免切换点推力台阶。不对外写 APM 参数名与源码路径。
 
 ## 3. set_throttle() 函数详解
 
@@ -464,64 +754,53 @@ SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, _throttle_dem * 100);
 
 ---
 
-#### 步骤 2：TRANSITION_TIMER 先混合，再 hold_stabilize
+#### 步骤 2a：WAIT 时 hold_hover（对照）
 
-**完整调用链**（代码真实顺序：先混合后给定）：
 ```
-主循环 50Hz
-  └─ set_servos() [servos.cpp:828]
-      └─ quadplane.update() [servos.cpp:849]
-          └─ transition->update() [quadplane.cpp:1759]
-              └─ case TRANSITION_TIMER:
-                  ├─[1626] throttle_scaled = last_throttle × transition_scale
-                  ├─[1636-1642] 全倾转时与 TECS k_throttle 混合
-                  │   ratio = f(current_tilt)
-                  │   throttle_scaled = vtol×(1-ratio) + fw×ratio
-                  │   例：0.6×0.5 + 0.8×0.5 = 0.7
-                  └─[1645] hold_stabilize(throttle_scaled) [quadplane.cpp:1009]
-                      ├─[1012] multicopter_attitude_rate_update()  ← 姿态环
-                      └─[1028] set_throttle_out(throttle_scaled)
-                          └─ motors->set_throttle()  ← 直接设油门，不跑位置环
+transition->update() → TRANSITION_AIRSPEED_WAIT
+  ├─ climb = assist_climb_rate_cms()           [1443]
+  ├─ hold_hover(climb)                         [1597/1111]
+  │   └─ Z 环 → motors->set_throttle()         ← 闭环集体油门
+  ├─ last_throttle = motors->get_throttle()    [1615]
+  └─ motors_output() → tilt_compensate
 ```
 
-**混合核心代码**：
+倾转角：`continuous_update` 中 θ≤Q_TILT_MAX，跟前飞油门；内四 ×1/cosθ，外四 ×1。
+
+#### 步骤 2b：TIMER 衰减后再 hold_stabilize
+
+**调用链**（先算 throttle_scaled，再给定；混合仅全倾转）：
+```
+transition->update() → TRANSITION_TIMER          [1628]
+  ├─ throttle_scaled = last_throttle × (1-t/T)   [1642-1643]
+  ├─ [可选] 全倾转：与 TECS 按 tilt ratio 混合   [1655-1661]
+  ├─ hold_stabilize(throttle_scaled)             [1664/1028]
+  │   ├─ multicopter_attitude_rate_update()
+  │   └─ set_throttle_out(throttle_scaled)       ← 不跑 Z 环
+  └─ motors_output()                             [1687]
+```
+
 ```cpp
-// quadplane.cpp:1626-1645
+// quadplane.cpp:1642-1664（摘录）
 float transition_scale = (trans_time_ms - transition_timer_ms) / trans_time_ms;
 float throttle_scaled = last_throttle * transition_scale;
-
+if (throttle_scaled < 0.01f) {
+    throttle_scaled = 0.01f;
+}
 if (tiltrotor.enabled() && !has_vtol_motor() && !has_fw_motor()) {
-    const float ratio = (current_tilt - airspeed_reached_tilt)
-                        / (fully_forward_tilt - airspeed_reached_tilt);
-    const float fw_throttle = MAX(SRV_Channels::get_output_scaled(k_throttle), 0) * 0.01;
-    throttle_scaled = constrain_float(
-        throttle_scaled * (1.0 - ratio) + fw_throttle * ratio, 0.0, 1.0);
+    // 仅全倾转构型
+    const float ratio = ...; // (θ - θ_as) / (θ_fwd - θ_as)
+    throttle_scaled = (1-ratio)*throttle_scaled + ratio*fw_throttle;
 }
 hold_stabilize(throttle_scaled);
 ```
 
-**hold_stabilize 核心代码**：
-```cpp
-// quadplane.cpp:1009-1030
-void QuadPlane::hold_stabilize(float throttle_in)
-{
-    multicopter_attitude_rate_update(...);  // 姿态
-    attitude_control->set_throttle_out(throttle_in, should_boost, 0); // 直接设油门
-}
-```
-
-**与 `hold_hover()` 的区别**：
+**JT-20**：有外四永久 VTOL → **跳过混合**，内四油门=衰减集体油门经混控与 \(1/\cos\theta\)；前飞靠倾角转到前面，不是 TIMER 里另开前飞油门 PID。
 
 | 函数 | 调用场景 | 油门来源 | 是否跑位置环 |
 |------|---------|---------|-------------|
-| `hold_hover()` | AIRSPEED_WAIT / 纯悬停 | climb_rate → Z 位置环 | ✓ 跑 |
-| `hold_stabilize()` | TRANSITION_TIMER | 外部算好的 throttle_scaled | ✗ 不跑 |
-
-**物理含义**：
-- `ratio`：0 = 纯旋翼，1 = 纯固定翼
-- 混合后再直接给定油门，不经位置环
-- 姿态环独立运行
-
+| `hold_hover()` | WAIT / 纯悬停 | climb_rate → Z 环 | ✓ |
+| `hold_stabilize()` | TIMER | `last_throttle×时间因子`（±全倾转混合） | ✗ |
 ---
 
 #### 步骤 3：set_throttle() 后处理（仅 k_throttle）
@@ -568,74 +847,35 @@ void Plane::set_throttle(void)
 
 #### 步骤 4：tilt_compensate() 补偿
 
-**完整调用链**：
-```
-主循环 50Hz
-  └─ set_servos() [servos.cpp:828]
-      └─ quadplane.update() [servos.cpp:849]
-          └─ motors_output() [quadplane.cpp:1767]
-              └─ motors->output() [quadplane.cpp:2010]
-                  ├─ output_armed_stabilizing() [AP_MotorsMulticopter.cpp:246]
-                  └─ thrust_compensation() [AP_MotorsMulticopter.cpp:260]
-                      └─ tilt_compensate() [tiltrotor.cpp:451]
-                          ├─ 1/cos(45°) = 1.414
-                          ├─ 电机推力 = 0.735 × 1.414 = 1.04
-                          └─ 归一化到 1.0
-```
+**调用链**：`motors_output()` → `motors->output()` → `thrust_compensation()` → `tilt_compensate()`（`tiltrotor.cpp:507`）。
 
-**核心代码**：
+真实逻辑（与「所有电机统一 ×1/cos」的简化说法不同）：
+
 ```cpp
-// tiltrotor.cpp:451-523
-void Tiltrotor::tilt_compensate(float *thrust, uint8_t num_motors)
-{
-    // 计算倾转因子
-    const float tilt_factor = 1.0f / cosf(radians(current_tilt * 90.0f));
-    
-    // 对倾转电机应用补偿
-    for (uint8_t i = 0; i < num_motors; i++) {
-        if (is_motor_tilting(i)) {
-            thrust[i] *= tilt_factor;
-        }
-    }
-    
-    // 滚转效力衰减（倾转后差动推力效力下降）
-    const float roll_factor = 1.0f - current_tilt;
-    for (uint8_t i = 0; i < num_motors; i++) {
-        if (is_motor_tilting(i)) {
-            thrust[i] *= roll_factor;
-        }
-    }
-    
-    // 偏航补偿（倾转后差动推力产生偏航力矩）
-    if (is_vectored()) {
-        const float yaw_gain = sinf(radians(current_tilt * 90.0f));
-        for (uint8_t i = 0; i < num_motors; i++) {
-            if (is_motor_tilting(i)) {
-                const float diff_thrust = motors->get_yaw() * yaw_gain * motors->get_roll_factor(i);
-                thrust[i] += diff_thrust;
-            }
-        }
-    }
-    
-    // 归一化（防止超过 1.0）
-    float max_thrust = 0.0f;
-    for (uint8_t i = 0; i < num_motors; i++) {
-        max_thrust = MAX(max_thrust, thrust[i]);
-    }
-    if (max_thrust > 1.0f) {
-        const float scale = 1.0f / max_thrust;
-        for (uint8_t i = 0; i < num_motors; i++) {
-            thrust[i] *= scale;
-        }
-    }
+// tiltrotor.cpp:507-525（结构）
+if (current_tilt <= 0) return;
+if (in_vtol_mode()) {
+    // 回垂向：非倾转电机 × cosθ，倾转电机 ×1
+    tilt_compensate_angle(thrust, n, cosθ, 1);
+} else {
+    // 往前倾（WAIT/TIMER 所在）：非倾转 ×1，倾转 × 1/cosθ
+    tilt_compensate_angle(thrust, n, 1, 1/cosθ);
 }
 ```
 
-**物理含义**：
-- `1/cos(θ)` 补偿：倾转后垂直升力分量减少，需要增加总推力
-- 滚转效力衰减：倾转后差动推力对滚转的效力下降
-- 偏航补偿：倾转后差动推力产生偏航力矩（矢量偏航）
+`tilt_compensate_angle`（454–499）额外对**倾转电机**：
 
+1. 随 `current_tilt` 把滚转差动往平均值揉：`thrust = tilt*avg + thrust*(1-tilt)`  
+2. 按 \(\sin\theta\) 与 `Q_TILT_YAW_ANGLE` 加差动偏航  
+3. 若有电机 >1，**全体**按比例缩小  
+
+**示例（θ=45°，往前倾）**：混控给内四 0.5 → ×√2 ≈ 0.707；外四保持混控值。若内四补偿后饱和再全局缩放。
+
+**物理含义**：
+
+- 仅**倾转电机**用 \(1/\cos\theta\) 弥补垂向分量损失（外四不乘）  
+- 滚转效力随倾转迁移/衰减；矢量偏航用倾转差动  
+- 与「集体油门先统一放大再分配」不是同一实现
 ---
 
 #### 步骤 5：物理分解（倾转 45°）
@@ -657,10 +897,10 @@ void Tiltrotor::tilt_compensate(float *thrust, uint8_t num_motors)
 主循环 50Hz
   └─ set_servos() [servos.cpp:828]
       └─ quadplane.update() [servos.cpp:849]
-          └─ motors_output() [quadplane.cpp:1668 或 1767]
-              ├─ rate_controller_run() [quadplane.cpp:2001]
+          └─ motors_output() [quadplane.cpp:1687 或 1786 / 定义于 1965]
+              ├─ rate_controller_run()
               │   └─ 角速度 PID → motors.set_roll/pitch/yaw()
-              └─ motors->output() [quadplane.cpp:2010]
+              └─ motors->output()
                   ├─ output_armed_stabilizing()  ← throttle+roll+pitch+yaw 混控
                   ├─ thrust_compensation()       ← tilt_compensate 回调
                   └─ output_to_motors()
@@ -702,73 +942,76 @@ VTOL 电机通道：  hold_* → motors._throttle → motors->output() → k_mot
 
 ---
 
-### 5.1 与 tiltrotor_motor_control.md 的对照验证
+### 5.1 与相关文档对照及不一致项
 
-根据 `tiltrotor_motor_control.md` 第 3.3 节"前向过渡阶段"的描述：
+| 说法 / 来源 | 核对结果 | 处理 |
+|-------------|----------|------|
+| 「TIMER 一定混合 TECS + 旋翼油门」 | 仅 `!has_vtol_motor && !has_fw_motor` | 正文改为「全倾转才混合」；JT-20 不混合 |
+| 「tilt_compensate = 所有电机 ×1/cos」 | 往前倾时**仅倾转电机** ×1/cos；外四 ×1 | 步骤 4 已按源码改写 |
+| 「滚转效力简单 thrust×(1-tilt)」 | 实际是 `tilt*avg + thrust*(1-tilt)` 揉向平均值 | 已更正 |
+| 旧文档行号（hold_hover≈1092 等） | 现 `hold_hover` 1111、`hold_stabilize` 1028、`tilt_compensate` 507、`update` 1717 | 索引表已更新 |
+| `tiltrotor_motor_control.md`「按 forward_throttle 定角」 | WAIT/未 TIMER：是；**TIMER：强制前飞角** | 分阶段写清，避免合成一句 |
+| 「WAIT 油门=重力公式」 | 实为 Z 环闭环 | §2.4.5 精确表述 |
+| 「倾转补偿在 set_throttle 流水线里」 | `set_throttle` 只动 `k_throttle`；补偿在 `motors->output` | §7.2 拆成两路 |
 
-| 文档描述 | 代码验证 | 一致性 |
-|---------|---------|:------:|
-| "电机部分倾转（0° < θ < 90°），同时承担旋翼和前推功能" | `continuous_update()` 中根据 `forward_throttle_pct()` 计算倾转角 | ✓ |
-| "混合两个油门源：旋翼（位置控制器）+ 固定翼（TECS）" | `quadplane.cpp:1636-1642` 中的混合公式 | ✓ |
-| "输出路径：`motors->output()` 经过混合矩阵 + `tilt_compensate`" | `motors_output()` → `motors->output()` → `output_armed_stabilizing()` → `thrust_compensation()` | ✓ |
-| "混合比例 `ratio` 基于倾转角" | `ratio = (current_tilt - airspeed_reached_tilt) / (fully_forward - airspeed_reached_tilt)` | ✓ |
-| "过渡早期：机翼升力不足，主要靠旋翼维持高度" | `ratio ≈ 0` 时，`throttle_scaled ≈ vtol_throttle` | ✓ |
-| "过渡晚期：机翼完全承担升力，旋翼完全提供前飞推力" | `ratio ≈ 1` 时，`throttle_scaled ≈ fw_throttle` | ✓ |
+与 `tiltrotor_motor_control.md` 仍一致的部分：倾转电机同时承担垂向/前向；输出经混控 + `tilt_compensate`；全倾转 TIMER 可用 tilt ratio 混合油门。
 
-**结论**：`throttle_calculation.md` 的数据流示例与 `tiltrotor_motor_control.md` 的描述完全一致，核心代码实现也验证了数据流的正确性。
+## 6. 关键代码位置索引（Plane 4.6.x / 本分支核对）
 
-## 6. 关键代码位置索引
-
-| 功能 | 文件 | 行号 | 函数 |
+| 功能 | 文件 | 行号 | 符号 |
 |------|------|------|------|
-| 主循环调度表 | ArduPlane.cpp | 59-61 | `sched_tasks[]` |
 | 油门主入口 | servos.cpp | 828 | `Plane::set_servos()` |
-| QuadPlane 更新 | servos.cpp | 849 | `quadplane.update()` |
-| 过渡状态机 | quadplane.cpp | 1759 | `transition->update()` |
-| 过渡油门混合 | quadplane.cpp | 1636-1642 | `SLT_Transition::update()` |
-| 旋翼悬停控制 | quadplane.cpp | 1092 | `QuadPlane::hold_hover()` |
-| 旋翼稳定控制 | quadplane.cpp | 1009 | `QuadPlane::hold_stabilize()` |
-| Z 轴控制器 | quadplane.cpp | 1033 | `QuadPlane::run_z_controller()` |
-| 位置控制器 | AC_PosControl.cpp | 989 | `AC_PosControl::update_z_controller()` |
-| 电机输出 | quadplane.cpp | 1946 | `QuadPlane::motors_output()` |
-| 倾转补偿 | tiltrotor.cpp | 451 | `Tiltrotor::tilt_compensate()` |
-| 油门后处理 | servos.cpp | 857 | `Plane::set_throttle()` |
-| 油门变化率限制 | servos.cpp | 883 | `Plane::throttle_slew_limit()` |
-| 油门抑制判断 | servos.cpp | 73 | `Plane::suppress_throttle()` |
-| PWM 输出 | servos.cpp | 929 | `Plane::servos_output()` |
-| TECS 控制器 | AP_TECS.cpp | 759 | `AP_TECS::update_pitch_throttle()` |
+| QuadPlane 更新 | quadplane.cpp | 1717 | `QuadPlane::update()` |
+| 过渡 WAIT | quadplane.cpp | 1539 | `TRANSITION_AIRSPEED_WAIT` |
+| 辅助爬升率 | quadplane.cpp | 1443 | `assist_climb_rate_cms()` |
+| WAIT 悬停油门 | quadplane.cpp | 1597 / 1111 | `hold_hover()` |
+| 冻结 last_throttle | quadplane.cpp | 1615 | `last_throttle = get_throttle()` |
+| 过渡 TIMER | quadplane.cpp | 1628 | `TRANSITION_TIMER` |
+| TIMER 衰减/混合 | quadplane.cpp | 1642–1664 | `throttle_scaled` / 全倾转混合 |
+| TIMER 稳定油门 | quadplane.cpp | 1028 | `hold_stabilize()` |
+| 过渡末 motors_output | quadplane.cpp | 1687 | `motors_output()` |
+| 电机输出 | quadplane.cpp | 1965 | `QuadPlane::motors_output()` |
+| 倾转角更新 | tiltrotor.cpp | 214 | `continuous_update()` |
+| 倾转补偿 | tiltrotor.cpp | 507 / 454 | `tilt_compensate` / `_angle` |
+| 油门后处理（FW） | servos.cpp | 595 / 857 | `set_throttle()` |
+| 统一硬件输出 | servos.cpp | 929 / 985 | `servos_output()` |
+| Z 位置环 | AC_PosControl.cpp | 989 | `update_z_controller()` |
+| set_throttle_out | AC_AttitudeControl_Multi.cpp | 350 | `set_throttle_out()` |
 
 ## 7. 总结
 
-### 7.1 油门来源的三种模式
+### 7.1 油门来源
 
-| 模式 | 油门来源 | 控制目标 | 代码路径 |
-|------|---------|---------|---------|
-| 纯固定翼 | TECS | 空速 + 高度 | `TECS → SRV_Channel::k_throttle` |
-| 纯旋翼 | 位置控制器 | 高度 + 爬升率 | `hold_hover → Z Controller → motors->set_throttle → motors->output → servos_output` |
-| 过渡 TIMER | 混合后直接给定 | 空速 + 姿态稳定 | `hold_stabilize(mixed) → set_throttle_out → motors->output → servos_output` |
+| 模式 | 旋翼/倾转电机油门 | 固定翼 `k_throttle` | 备注 |
+|------|-------------------|---------------------|------|
+| 纯 FW | 通常关闭或 tilt mask 前推 | TECS | |
+| 纯 VTOL | `hold_hover` Z 环 | 可选 VFWD | |
+| **WAIT** | Z 环闭环 + tilt 补偿 | TECS 仍可算（助推 θ） | 内四×1/cos，外四×1 |
+| **TIMER** | `last_throttle` 时间衰减（±全倾转混合） | TECS 继续 | JT-20 无 tilt–TECS 混合 |
+| DONE | VTOL 停；倾转电机可 mask 前推 | TECS | 外四停 |
 
-### 7.2 油门后处理流程
+### 7.2 两路后处理（勿画成单串）
 
 ```
-原始油门（来自 TECS 或位置控制器）
-  ↓
-电池电压补偿（电压下降时增加油门）
-  ↓
-油门限制（min/max 限制）
-  ↓
-油门抑制（着陆、安全等场景强制归零）
-  ↓
-油门变化率限制（防止突变）
-  ↓
-倾转补偿（1/cos(θ) 补偿垂直升力损失）
-  ↓
-PWM 输出（转换为硬件信号）
+旋翼通道:  hold_* → motors._throttle → 混控 → tilt_compensate → k_motorN ─┐
+                                                                           ├─ servos_output() → 硬件
+固定翼通道: TECS → k_throttle → set_throttle / slew ───────────────────────┘
 ```
 
-### 7.3 关键设计思想
+`set_throttle()` 的电池补偿 / min-max / suppress **只作用于 `k_throttle`**，不经过 `tilt_compensate`。
 
-1. **统一接口**：无论固定翼还是旋翼，最终都通过 `SRV_Channel::k_throttle` 或 `motors->set_throttle()` 设置油门
-2. **平滑过渡**：通过 `ratio` 参数实现油门源的平滑切换，避免突变
-3. **多重保护**：电池补偿、油门限制、变化率限制、油门抑制等多层保护机制
-4. **物理分解**：通过 `1/cos(θ)` 补偿，确保倾转过程中垂直升力不丢失
+### 7.3 设计要点
+
+1. **WAIT 闭环托举，TIMER 开环撤力**——空速门槛前后油门机理不同。  
+2. **θ 与集体油门在 TIMER 解耦**：油门按时间掉，角按 RATE 往前打。  
+3. **构型分叉**：全倾转才在 TIMER 混 TECS；JT-20 有永久 VTOL 则不混。  
+4. **补偿分电机**：\(1/\cos\theta\) 只打在 tilt_mask 上。  
+5. **走廊/外四 fo(θ)** 不是 APM 原生量——见 `tilt_corridor_vs_apm.md`；参数与脚本另接。
+
+## 8. 修订记录
+
+| 版本 | 日期 | 说明 |
+|------|------|------|
+| （原稿） | — | 调用链、TECS/旋翼/过渡、tilt 补偿示例 |
+| 本次 | 2026-08-26 | 补 WAIT 专节；TIMER 内四原理；JT-20 vs 全倾转；校正 tilt_compensate 与行号；梳理与旧表述不一致项 |
+| +风险 | 2026-08-26 | §2.7：JT-20 MC→TECS 硬切换风险 R-THR-01..03；与走廊缺口 G6 对齐 |
