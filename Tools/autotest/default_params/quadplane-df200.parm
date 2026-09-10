@@ -99,8 +99,12 @@ PTCH_LIM_MAX_DEG  15
 KFF_RDDRMIX      0.5
 RLL2SRV_TCONST   0.5
 PTCH2SRV_TCONST  0.5
-NAVL1_PERIOD     14
+NAVL1_PERIOD     22
+WP_RADIUS        400
 NAVL1_DAMPING    0.75
+
+ROLL_LIMIT_DEG   40
+
 
 # Fixed-wing attitude control gains (restored after 163 found them all 0:
 # yaw rate r=-54.7 constant, Yout=0, plane spun into ground. These are FW
@@ -109,7 +113,7 @@ YAW2SRV_DAMP     2.0     # yaw rate -> rudder damping (was 0, r unchecked)
 YAW2SRV_SLIP     1.0     # sideslip -> rudder correction (was 0)
 YAW2SRV_RLL      1.0     # roll->rudder coordination
 YAW2SRV_IMAX     1500    # rudder integrator max
-RLL2SRV_RMAX     40      # roll rate limit deg/s (was 0, roll crippled)
+RLL2SRV_RMAX     120–180      # roll rate limit deg/s (was 0, roll crippled)
 PTCH2SRV_RMAX_UP 40      # pitch rate up limit (was 0, TECS pitch oscillated)
 PTCH2SRV_RMAX_DN 40      # pitch rate down limit (was 0)
 PTCH2SRV_RATE_P  1.0    # pitch rate P gain (default 1.0, raise for big plane)
