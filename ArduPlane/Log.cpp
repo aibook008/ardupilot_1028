@@ -449,9 +449,13 @@ const struct LogStructure Plane::log_structure[] = {
 // @Field: Tilt: Current tilt angle, 0 deg vertical, 90 deg horizontal
 // @Field: FL: Front left tilt angle, 0 deg vertical, 90 deg horizontal
 // @Field: FR: Front right tilt angle, 0 deg vertical, 90 deg horizontal
+// @Field: Traw: Assisted-flight raw tilt demand before corridor gate, deg
+// @Field: Tmax: Corridor θ_max(V) when CRD_EN>0, deg (NaN if gate off)
+// @Field: Spd: Speed used by corridor gate, m/s (NaN if gate off / unavailable)
+// @Field: Crd: Corridor gate state: 0=off/N/A, 1=limiting raw demand, -1=enabled not limiting
 #if HAL_QUADPLANE_ENABLED
     { LOG_TILT_MSG, sizeof(Tiltrotor::log_tiltrotor),
-      "TILT", "Qfff",  "TimeUS,Tilt,FL,FR", "sddd", "F---" , true },
+      "TILT", "Qffffffh",  "TimeUS,Tilt,FL,FR,Traw,Tmax,Spd,Crd", "sdddddn-", "F-------" , true },
 #endif
 
 // @LoggerMessage: PIDG

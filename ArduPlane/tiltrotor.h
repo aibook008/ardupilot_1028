@@ -84,12 +84,30 @@ public:
     AP_Float fixed_gain;
     AP_Float flap_angle_deg;
 
+    // θ–V corridor gate (Q_TILT_CRD_*); CRD_EN=0 keeps stock tilt schedule
+    AP_Int8  crd_enable;
+    AP_Float crd_margin;
+    AP_Float crd_t1;
+    AP_Float crd_v1;
+    AP_Float crd_t2;
+    AP_Float crd_v2;
+    AP_Float crd_t3;
+    AP_Float crd_v3;
+    AP_Float crd_t4;
+    AP_Float crd_v4;
+
     float current_tilt;
     float current_throttle;
     bool _motors_active:1;
     float transition_yaw_cd;
     uint32_t transition_yaw_set_ms;
     bool _is_vectored;
+
+    // Last assisted-flight tilt command / corridor gate sample for TILT log
+    float log_tilt_raw_deg;
+    float log_tilt_max_deg;
+    float log_crd_speed_ms;
+    int16_t log_crd_active;  // 0=gate off or N/A, 1=limiting, -1=enabled but not limiting
 
     // types of tilt mechanisms
     enum {TILT_TYPE_CONTINUOUS    =0,
@@ -102,13 +120,28 @@ public:
 
 private:
 
-    // Tiltrotor specific log message
+    // Speed for corridor gate: prefer airspeed, else groundspeed when still early;
+    // returns false if no usable speed (caller should hold tilt).
+    float corridor_speed_ms(bool &ok) const;
+
+    // WAIT-only breakpoint gate: if tilt_raw would cross a CRD_Tn, require
+    // speed ≥ CRD_Vn (+margin). Otherwise allow tilt_raw. No per-speed interpolate.
+    // Returns commanded tilt fraction [0,1]; fills log_* for TILT message.
+    float corridor_gate_tilt(float tilt_raw);
+
+    // Tiltrotor specific log message (TILT)
+    // Tilt/FL/FR: angles deg; Traw/Tmax: commanded raw vs corridor max deg;
+    // Spd: speed used by gate m/s; Crd: 0 off/N/A, 1 limiting, -1 enabled not limiting
     struct PACKED log_tiltrotor {
         LOG_PACKET_HEADER;
         uint64_t time_us;
         float current_tilt;
         float front_left_tilt;
         float front_right_tilt;
+        float tilt_raw_deg;
+        float tilt_max_deg;
+        float crd_speed_ms;
+        int16_t crd_active;  // 0 off/N/A, 1 limiting, -1 enabled not limiting
     };
 
     bool setup_complete;

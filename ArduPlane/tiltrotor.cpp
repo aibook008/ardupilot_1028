@@ -82,6 +82,81 @@ const AP_Param::GroupInfo Tiltrotor::var_info[] = {
     // @User: Standard
     AP_GROUPINFO("WING_FLAP", 10, Tiltrotor, flap_angle_deg, 0),
 
+    // @Param: CRD_EN
+    // @DisplayName: Tilt θ–V corridor gate enable
+    // @Description: When enabled, assisted-flight tilt (AIRSPEED_WAIT and TRANSITION_TIMER) is limited by a speed→tilt table so tilt cannot advance faster than airspeed. 0 keeps the stock Q_TILT_MAX / open-loop TIMER schedule.
+    // @Values: 0:Disable, 1:Enable
+    // @User: Advanced
+    AP_GROUPINFO("CRD_EN", 11, Tiltrotor, crd_enable, 0),
+
+    // @Param: CRD_MRG
+    // @DisplayName: Corridor airspeed margin
+    // @Description: Extra airspeed (m/s) subtracted before table lookup. Defaults are 0 because CRD_Vn already include engineering margin from V_min(θ).
+    // @Units: m/s
+    // @Range: 0 10
+    // @User: Advanced
+    AP_GROUPINFO("CRD_MRG", 12, Tiltrotor, crd_margin, 0),
+
+    // @Param: CRD_T1
+    // @DisplayName: Corridor tilt breakpoint 1
+    // @Description: Tilt angle (deg) allowed once speed reaches CRD_V1. Four (T,V) pairs define θ_max(V).
+    // @Units: deg
+    // @Range: 0 90
+    // @User: Advanced
+    AP_GROUPINFO("CRD_T1", 13, Tiltrotor, crd_t1, 10),
+
+    // @Param: CRD_V1
+    // @DisplayName: Corridor speed breakpoint 1
+    // @Description: Minimum speed (m/s) to allow tilt CRD_T1. Gate applies in AIRSPEED_WAIT only.
+    // @Units: m/s
+    // @Range: 0 80
+    // @User: Advanced
+    AP_GROUPINFO("CRD_V1", 14, Tiltrotor, crd_v1, 10),
+
+    // @Param: CRD_T2
+    // @DisplayName: Corridor tilt breakpoint 2
+    // @Units: deg
+    // @Range: 0 90
+    // @User: Advanced
+    AP_GROUPINFO("CRD_T2", 15, Tiltrotor, crd_t2, 20),
+
+    // @Param: CRD_V2
+    // @DisplayName: Corridor speed breakpoint 2
+    // @Units: m/s
+    // @Range: 0 80
+    // @User: Advanced
+    AP_GROUPINFO("CRD_V2", 16, Tiltrotor, crd_v2, 25),
+
+    // @Param: CRD_T3
+    // @DisplayName: Corridor tilt breakpoint 3
+    // @Units: deg
+    // @Range: 0 90
+    // @User: Advanced
+    AP_GROUPINFO("CRD_T3", 17, Tiltrotor, crd_t3, 30),
+
+    // @Param: CRD_V3
+    // @DisplayName: Corridor speed breakpoint 3
+    // @Units: m/s
+    // @Range: 0 80
+    // @User: Advanced
+    AP_GROUPINFO("CRD_V3", 18, Tiltrotor, crd_v3, 35),
+
+    // @Param: CRD_T4
+    // @DisplayName: Corridor tilt breakpoint 4
+    // @Description: Typically matches Q_TILT_MAX. Beyond this, WAIT is still capped by Q_TILT_MAX; TIMER is not corridor-gated.
+    // @Units: deg
+    // @Range: 0 90
+    // @User: Advanced
+    AP_GROUPINFO("CRD_T4", 19, Tiltrotor, crd_t4, 45),
+
+    // @Param: CRD_V4
+    // @DisplayName: Corridor speed breakpoint 4
+    // @Description: Speed (m/s) at which CRD_T4 is allowed in WAIT. TIMER ignores this table.
+    // @Units: m/s
+    // @Range: 0 80
+    // @User: Advanced
+    AP_GROUPINFO("CRD_V4", 20, Tiltrotor, crd_v4, 45),
+
     AP_GROUPEND
 };
 
@@ -93,6 +168,10 @@ const AP_Param::GroupInfo Tiltrotor::var_info[] = {
 Tiltrotor::Tiltrotor(QuadPlane& _quadplane, AP_MotorsMulticopter*& _motors):quadplane(_quadplane),motors(_motors)
 {
     AP_Param::setup_object_defaults(this, var_info);
+    log_tilt_raw_deg = 0;
+    log_tilt_max_deg = 0;
+    log_crd_speed_ms = 0;
+    log_crd_active = 0;
 }
 
 void Tiltrotor::setup()
@@ -193,6 +272,114 @@ void Tiltrotor::slew(float newtilt)
 
     // translate to 0..1000 range and output
     SRV_Channels::set_output_scaled(SRV_Channel::k_motor_tilt, 1000 * current_tilt);
+}
+
+/*
+  Speed for θ–V corridor gate.
+  Prefer airspeed estimate; if unavailable, allow groundspeed only while still
+  early in tilt (below first table angle) or while GS is still low. Once tilt
+  or speed is high, requiring airspeed avoids optimistic GS gating — hold
+  instead (ok=false).
+ */
+float Tiltrotor::corridor_speed_ms(bool &ok) const
+{
+    float aspeed = 0.0f;
+    if (quadplane.ahrs.airspeed_estimate(aspeed)) {
+        ok = true;
+        return aspeed;
+    }
+
+    const float gs = quadplane.ahrs.groundspeed();
+    const float t1_frac = constrain_float(crd_t1.get(), 0.0f, 90.0f) * (1.0f / 90.0f);
+    const float v1 = MAX(crd_v1.get(), 0.0f);
+    const bool early_tilt = current_tilt < t1_frac;
+    const bool gs_still_low = gs < v1;
+    if ((early_tilt || gs_still_low) && is_positive(gs)) {
+        ok = true;
+        return gs;
+    }
+
+    ok = false;
+    return 0.0f;
+}
+
+/*
+  WAIT breakpoint gate (not continuous θ_max(V) interpolate).
+
+  Approach a gate freely (rate-limited by slew). Only when current_tilt has
+  reached Tn (within eps) and tilt_raw still wants to go further: require
+  speed ≥ Vn + margin, else hold at Tn. This avoids the 205 deadlock where
+  checking "raw crosses Tn" while still far below Tn froze tilt at ~1° and
+  AS never rose enough to pass V1.
+
+  Between gates / below first gate: allow tilt_raw.
+  Speed read at most once. log_* filled for TILT.
+ */
+float Tiltrotor::corridor_gate_tilt(float tilt_raw)
+{
+    const float T[4] = {
+        constrain_float(crd_t1.get(), 0.0f, 90.0f) * (1.0f / 90.0f),
+        constrain_float(crd_t2.get(), 0.0f, 90.0f) * (1.0f / 90.0f),
+        constrain_float(crd_t3.get(), 0.0f, 90.0f) * (1.0f / 90.0f),
+        constrain_float(crd_t4.get(), 0.0f, 90.0f) * (1.0f / 90.0f),
+    };
+    const float S[4] = {
+        MAX(crd_v1.get(), 0.0f),
+        MAX(crd_v2.get(), 0.0f),
+        MAX(crd_v3.get(), 0.0f),
+        MAX(crd_v4.get(), 0.0f),
+    };
+    const float margin = MAX(crd_margin.get(), 0.0f);
+    // ~0.5 deg — treat as "arrived at gate" despite RATE quantization
+    const float eps = 0.5f / 90.0f;
+
+    // Not trying to advance
+    if (tilt_raw <= current_tilt + 1.0e-4f) {
+        log_tilt_max_deg = current_tilt * 90.0f;
+        log_crd_speed_ms = nanf("");
+        log_crd_active = -1;
+        return tilt_raw;
+    }
+
+    // Highest gate we have arrived at while raw still wants to go further
+    int8_t need = -1;
+    for (int8_t i = 3; i >= 0; i--) {
+        if (current_tilt + eps >= T[i] && tilt_raw > T[i] + 1.0e-4f) {
+            need = i;
+            break;
+        }
+    }
+
+    if (need < 0) {
+        // Still climbing toward the next gate — allow raw up to that gate angle
+        float next_T = T[0];
+        for (uint8_t i = 0; i < 4; i++) {
+            if (current_tilt + eps < T[i]) {
+                next_T = T[i];
+                break;
+            }
+            next_T = T[i];
+        }
+        log_tilt_max_deg = next_T * 90.0f;
+        log_crd_speed_ms = nanf("");
+        log_crd_active = -1;
+        // Cap at next gate so we stop on the threshold and then check speed
+        return MIN(tilt_raw, next_T);
+    }
+
+    bool speed_ok = false;
+    const float speed = corridor_speed_ms(speed_ok);
+    log_crd_speed_ms = speed_ok ? speed : nanf("");
+    log_tilt_max_deg = T[need] * 90.0f;
+
+    if (!speed_ok || speed < S[need] + margin) {
+        // Arrived at Tn but speed short — hold at gate angle
+        log_crd_active = 1;
+        return T[need];
+    }
+
+    log_crd_active = -1;
+    return tilt_raw;
 }
 
 // return the current tilt value that represents forward flight
@@ -320,19 +507,34 @@ void Tiltrotor::continuous_update(void)
         return;
     }
 
-    if (quadplane.assisted_flight &&
-        transition->transition_state >= Tiltrotor_Transition::TRANSITION_TIMER) {
-        // we are transitioning to fixed wing - tilt the motors all
-        // the way forward
-        slew(get_forward_flight_tilt());
+    const bool in_timer = quadplane.assisted_flight &&
+        transition->transition_state >= Tiltrotor_Transition::TRANSITION_TIMER;
+
+    float tilt_raw;
+    if (in_timer) {
+        // TIMER: stock open-loop to full forward. Corridor must NOT clamp here —
+        // a table ending at Q_TILT_MAX (e.g. T4=45) would freeze tilt forever.
+        tilt_raw = get_forward_flight_tilt();
     } else {
-        // until we have completed the transition we limit the tilt to
-        // Q_TILT_MAX. Anything above 50% throttle gets
-        // Q_TILT_MAX. Below 50% throttle we decrease linearly. This
-        // relies heavily on Q_VFWD_GAIN being set appropriately.
-       float settilt = constrain_float((SRV_Channels::get_output_scaled(SRV_Channel::k_throttle)-MAX(plane.aparm.throttle_min.get(),0)) * 0.02, 0, 1);
-       slew(MIN(settilt * max_angle_deg * (1/90.0), get_forward_flight_tilt())); 
+        // WAIT (and other assisted pre-TIMER): same as stock — throttle maps to
+        // tilt, capped by Q_TILT_MAX.
+        
+        const float settilt = constrain_float((SRV_Channels::get_output_scaled(SRV_Channel::k_throttle)-MAX(plane.aparm.throttle_min.get(),0)) * 0.02, 0, 1);
+        tilt_raw = MIN(settilt * max_angle_deg * (1/90.0), get_forward_flight_tilt());
     }
+
+    // Corridor gate: WAIT only (breakpoint hold, not continuous θ_max(V)).
+    // TIMER skips gate so full-forward stays reachable after airspeed_min.
+    float tilt_cmd = tilt_raw;
+    log_tilt_raw_deg = tilt_raw * 90.0f;
+    if (crd_enable > 0 && !in_timer) {
+        tilt_cmd = corridor_gate_tilt(tilt_raw);
+    } else {
+        log_tilt_max_deg = nanf("");
+        log_crd_speed_ms = nanf("");
+        log_crd_active = 0;
+    }
+    slew(tilt_cmd);
 }
 
 
@@ -411,7 +613,13 @@ void Tiltrotor::write_log()
     struct log_tiltrotor pkt {
         LOG_PACKET_HEADER_INIT(LOG_TILT_MSG),
         time_us      : AP_HAL::micros64(),
-        current_tilt : current_tilt * 90.0,
+        current_tilt : current_tilt * 90.0f,
+        front_left_tilt : 0,
+        front_right_tilt : 0,
+        tilt_raw_deg : log_tilt_raw_deg,
+        tilt_max_deg : log_tilt_max_deg,
+        crd_speed_ms : log_crd_speed_ms,
+        crd_active : log_crd_active,
     };
 
     if (type != TILT_TYPE_VECTORED_YAW) {

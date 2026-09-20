@@ -307,6 +307,18 @@ private:
     float accel_needed(float stop_distance, float ground_speed_squared) const;
     float stopping_distance(void);
 
+    // deceleration actually achievable in POSITION1 braking given the
+    // Q_BCK_PIT_LIM pitch limit at the current airspeed. Used by
+    // stopping_distance() so braking starts early enough to respect
+    // the pitch limit instead of overshooting the landing point.
+    float effective_decel(void) const;
+
+    // two-phase (AIRBRAKE + POSITION1) stopping distance for the VTOL
+    // landing deceleration. AIRBRAKE runs at idle throttle with about
+    // half the deceleration of the pitch-limited POSITION1 phase, so
+    // the AIRBRAKE entry distance must account for both phases.
+    float stopping_distance_2phase(float ground_speed) const;
+
     // distance below which we don't do approach, based on stopping
     // distance for cruise speed
     float transition_threshold(void);
@@ -532,6 +544,16 @@ private:
         float target_accel;
         uint32_t last_pos_reset_ms;
         bool overshoot;
+
+        // altitude ceiling (cm, ABOVE_ORIGIN) for the POSITION1 braking
+        // phase: captured at POSITION1 entry. The Z target is clamped to
+        // this so the aircraft never climbs while braking.
+        float max_z_target_cm;
+
+        // distance to the landing target (m) captured at POSITION1 entry.
+        // The POSITION1 speed profile is referenced to this point so
+        // braking starts immediately at handover.
+        float pos1_handover_dist_m;
 
         float override_descent_rate;
         uint32_t last_override_descent_ms;

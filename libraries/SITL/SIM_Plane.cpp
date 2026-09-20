@@ -127,11 +127,10 @@ Plane::Plane(const char *frame_str) :
         coefficient.c_m_a = -0.487f;       // 1/rad, Cm vs α fit (Excel β=0 col)
         coefficient.c_m_q = -19.287f;      // pitch damping (Excel AVL)
         coefficient.c_m_0 = -0.0069f;      // Cm at α=0 (Excel β=0 col, was stock 0.045)
-        // Clp from 动导数 AVL = -0.5873. 169: with cmd-flatten (rotor Mtot=0)
-        // the tilt-37 roll divergence STILL occurs, purely from aero La_p.
-        // La_p = qbar*b^2*Clp*p/(2V); at AS48 coefficient ~500, Euler integral
-        // at 1200Hz numerically diverges. Halve Clp to reduce stiffness.
-        coefficient.c_l_p = -0.3f;
+        // Clp strict-xlsx = -0.5873 (动导数 AVL). Was halved to -0.3 for 169's
+        // La_p Euler divergence at 1200Hz; with prop-table motor model + corridor
+        // gating (207 clean) restoring the true value — watch La_p magnitude.
+        coefficient.c_l_p = -0.5873f;
         // Isolation (114): VTOL R/P/Y mix already 0 at AS≥25 and Mot span≈0,
         // but still blew at AS≈27. Zero ALL control-surface aero derivatives so
         // aileron/elevator/rudder produce no force/moment. Bare-airframe aero
@@ -153,13 +152,19 @@ Plane::Plane(const char *frame_str) :
         // log shows a persistent net rotor Mx≈-25 Nm from imperfect pairwise
         // cancellation (outer pairs at slightly different thrust), while
         // aileron 0.091 gives only La_da≈-5..-9 Nm - cannot hold the drift.
-        // Raise aileron effectiveness 0.091 -> 0.15 so the FW roll channel
-        // can absorb the residual rotor moment through TIMER to FW done.
-        coefficient.c_l_deltaa = 0.15f;
-        coefficient.c_m_deltae = 0.42f;
-        coefficient.c_l_deltar = -0.037f;
-        coefficient.c_n_deltar = 0.1f;
-        coefficient.c_y_deltar = -0.2f;
+        // 2026-09-17 strict-xlsx surface pass (207 clean baseline). Refit from
+        // 数据库_v2.xlsx elevator/rudder/aileron sheets (δ sweep, α=0, β=0):
+        //   aileron |Clδ| = 0.25 /rad  (±10° linear; saturates 0.20 at 25°)
+        //   elevator Cmδ = -1.21 /rad  (symmetric fit ±5..±25; was 0.42 = 3x weak,
+        //     explains 181's AS60 340Nm nose-down that 0.42 could not hold)
+        //   rudder  Cnδ = -0.069 /rad (|δ|=5°: 0.063, 25°: 0.068 — very linear)
+        //   rudder  CYδ ≈ 0, Clδ ≈ 0  (V-tail pure differential — stock -0.2/-0.037
+        //     had no data basis)
+        coefficient.c_l_deltaa = 0.25f;
+        coefficient.c_m_deltae = 1.21f;
+        coefficient.c_l_deltar = 0.0f;
+        coefficient.c_n_deltar = 0.069f;
+        coefficient.c_y_deltar = 0.0f;
         coefficient.c_lift_deltae = 0.0f;   // keep: camber lift split not fitted
         coefficient.c_drag_deltae = 0.0f;   // keep: elevator drag ignored
         coefficient.c_n_deltaa = 0.0f;      // keep: aileron-yaw not fitted
@@ -187,24 +192,28 @@ Plane::Plane(const char *frame_str) :
         // Step 1 (after 164): revert c_l_b/c_l_r/c_n_p to 0 (162 aero config)
         // to separate transition issue from FW control. 164 showed restoring
         // c_l_r triggered La_p divergence at tilt 36. Keep FW gains (in parm).
-        coefficient.c_l_b = 0.0f;
-        coefficient.c_n_b = 0.25f;
-        coefficient.c_l_r = 0.0f;
-        coefficient.c_n_p = 0.0f;
+        // 2026-09-17 "strict-xlsx" pass: lateral derivatives re-fitted from
+        // 数据库_v2.xlsx 基本气动性能 Mx/My/Mz/CY dimensional tables (α=0,
+        // β=±5° linear fit, qSb=0.5·1.225·48.611²·S·b):
+        //   Clβ = -0.093 /rad   (stock -0.12; was 0 for isolation)
+        //   Cnβ = +0.015 /rad   (stock 0.25 was 16x too big! β=10° direct: 0.0084)
+        //   CYβ = -0.44  /rad   (stock -0.98 was 2.2x too big)
+        // Cnβ/CYβ stock values were the biggest divergence from the data set.
+        // NOTE: small Cnβ + weak Cnr(-0.065) = very lightly damped dutch roll;
+        // heading hold must carry it (rudder + rotor yaw).
+        coefficient.c_l_b = -0.093f;
+        coefficient.c_n_b = 0.015f;
+        coefficient.c_l_r = 0.0f;      // not in xlsx (8 dynamic derivatives only)
+        coefficient.c_n_p = 0.0f;      // not in xlsx
         // Heading-control trial (151): Excel 动导数 AVL Cnr = -0.065
         // (偏航阻尼) replaces stock -1.0 - 15x weaker, so yaw becomes a
-        // lightly-damped spring(Cnβ)-damper(Cnr) mode. Also re-enable the
-        // RUDDER (stock derivatives) so active heading control exists:
-        //   c_n_deltar -> yaw moment from rudder
-        //   c_y_deltar -> side force from rudder
-        //   c_l_deltar -> small roll coupling from rudder (stock, small)
-        // Aileron/elevator stay zeroed to keep the roll path isolated.
-        // This is now a heading-control-ability test: restoring (Cnβ) +
-        // damping (Cnr Excel) + rudder (active) + rotor yaw diff.
+        // lightly-damped spring(Cnβ)-damper(Cnr) mode.
+        // strict-xlsx: rudder trio moved to surface block above (Cnδ=-0.069,
+        // CYδ=0, Clδ=0 per V-tail differential tables).
         coefficient.c_n_r = -0.065f;
-        coefficient.c_n_deltar = 0.1f;
-        coefficient.c_y_deltar = -0.2f;
-        coefficient.c_l_deltar = -0.037f;
+        // strict-xlsx: CYβ from xlsx CY table (α=0, β=±5°): -0.44 /rad
+        // (stock -0.98 is 2.2x too strong for this small tailless-ish body)
+        coefficient.c_y_b = -0.44f;
     } else if (strstr(frame_str, "-jt20")) {
         // JT-20 fixed-wing aero from jt_20.sdf AdvancedLiftDragPlugin.
         // Override the default (Skywalker) coefficients with the real airframe's.

@@ -2300,6 +2300,23 @@ void QuadPlane::PosControlState::set_state(enum position_control_state s)
             qp.attitude_control->reset_yaw_target_and_rate(false);
             pos1_speed_limit = plane.ahrs.groundspeed_vector().length();
             done_accel_init = false;
+            // capture the distance at handover: the POSITION1 braking
+            // profile uses this as its zero point, so braking starts
+            // the moment POSITION1 begins (no cruise segment waiting
+            // for the profile to rendezvous with the current speed).
+            pos1_handover_dist_m = plane.auto_state.wp_distance;
+            // capture the altitude ceiling for the braking phase: the
+            // Z target is clamped to this so the aircraft never climbs
+            // while decelerating (wing lift surplus would otherwise be
+            // spent on climbing instead of braking).
+            {
+                int32_t cur_alt_cm;
+                if (!plane.current_loc.get_alt_cm(Location::AltFrame::ABOVE_ORIGIN, cur_alt_cm)) {
+                    // fall back to the inertial navigation altitude (cm, UP frame)
+                    cur_alt_cm = qp.inertial_nav.get_position_z_up_cm();
+                }
+                max_z_target_cm = cur_alt_cm;
+            }
         } else if (s == QPOS_AIRBRAKE) {
             // start with zero integrator on vertical throttle
             qp.pos_control->get_accel_z_pid().set_integrator(0);
@@ -2413,14 +2430,46 @@ void QuadPlane::vtol_position_controller(void)
             }
         }
         
-        // speed for crossover to POSITION1 controller
+        // speed for crossover to POSITION1 controller. With idle-throttle
+        // AIRBRAKE the handover must wait until the aircraft is slow
+        // enough that the POSITION1 pitch-up will not balloon it: at
+        // high speed the wing lift at the pitch limit far exceeds
+        // weight, the Z controller unloads the props, and the aircraft
+        // climbs tens of metres. Hand over when the balloon-safe speed
+        // is reached, OR when the aircraft is about to fly through the
+        // target (no distance guard exists inside AIRBRAKE; without the
+        // fly-through guard the direction test only fires after the
+        // point is behind us). Note there is deliberately no
+        // distance-profile term here: sqrt(2*decel*dist) exceeds the
+        // current speed at long range, which would hand over instantly
+        // (219 regression), and shrinks below the balloon-safe speed
+        // near the target, which would hold AIRBRAKE until fly-through
+        // (215 regression).
         const float aspeed_threshold = MAX(plane.aparm.airspeed_min-2, assist.speed);
+        // balloon-safe handover speed: at ~0.6x airspeed_min the pitch-
+        // limited wing lift is close to weight (0.6^2 = 0.36 of the
+        // dynamic pressure at airspeed_min)
+        const float handover_speed = MAX(0.6f * plane.aparm.airspeed_min,
+                                         aspeed_threshold - 10.0f);
+        const bool speed_on_profile = aspeed <= handover_speed ||
+                                      distance < 20.0f;
 
         // run fixed wing navigation
         plane.nav_controller->update_waypoint(plane.auto_state.crosstrack ? plane.prev_WP_loc : plane.current_loc, loc);
 
-        // use TECS for throttle
-        SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, plane.TECS_controller.get_throttle_demand());
+        // use TECS for throttle. In AIRBRAKE the demand is forced to
+        // idle: TECS's internal speed-demand slew (~0.9 * TECS_SINK_MIN
+        // * g / cruise_speed) is far slower than the deceleration we
+        // need, so following TECS throttle leaves excess speed at the
+        // POSITION1 handover and TECS even throttles UP while chasing
+        // its lagging speed target, fighting the prop drag. Idle
+        // throttle lets the props deliver their maximum natural
+        // deceleration. TECS pitch demand is still used for attitude.
+        if (poscontrol.get_state() == QPOS_AIRBRAKE) {
+            SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, MAX(plane.aparm.throttle_min.get(), 0));
+        } else {
+            SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, plane.TECS_controller.get_throttle_demand());
+        }
 
         // use TECS for pitch
         int32_t commanded_pitch = plane.TECS_controller.get_pitch_demand();
@@ -2433,11 +2482,15 @@ void QuadPlane::vtol_position_controller(void)
         // use nav controller roll
         plane.calc_nav_roll();
 
-        // work out the point to enter airbrake mode. We want enough
-        // distance to stop, plus some margin for the time it takes to
-        // change the accel (jerk limit) plus the min time in airbrake
-        // mode. For simplicity we assume 2 seconds margin
-        const float stop_distance = stopping_distance() + 2*closing_speed;
+        // work out the point to enter airbrake mode. Fixed 4 km entry
+        // (user-tuned): AIRBRAKE has the whole 4 km to idle-brake from
+        // cruise speed to the handover speed, POSITION1 finishes the
+        // job, and any remaining distance is closed as a multicopter.
+        // The two-phase model is kept only as a floor so that a slow
+        // entry (headwind, low cruise speed) never enters too late to
+        // stop. Tuning knob until this becomes a proper parameter.
+        const float stop_distance = MAX(4000.0f,
+                                        stopping_distance_2phase(groundspeed) + 2*closing_speed);
 
         if (!suppress_z_controller && poscontrol.get_state() == QPOS_AIRBRAKE) {
             hold_hover(0);
@@ -2472,24 +2525,37 @@ void QuadPlane::vtol_position_controller(void)
         }
 
         /*
-          we must switch to POSITION1 if our airspeed drops below the
-          assist speed. We additionally switch to POSITION1 if we are
-          too far above our desired velocity profile, or our attitude
-          has deviated too much
+          we must switch to POSITION1 if our speed has come down to the
+          handover speed. We additionally switch to POSITION1 if we are
+          past the target, or our attitude has deviated too much. The
+          attitude check is gated to 3s after entry: the L1 controller
+          can demand a large roll correction right at the AIRBRAKE
+          transition (waypoint/prev_WP switch), and the roll takes a
+          couple of seconds to track it — without the gate that transient
+          exits AIRBRAKE after only the 1s minimum (221 regression).
          */
         const int32_t attitude_error_threshold_cd = 1000;
 
         // use at least 1s of airbrake time to ensure motors have a chance to
         // properly spin up
         const uint32_t min_airbrake_ms = 1000;
+        const bool attitude_check_ready = poscontrol.time_since_state_start_ms() > 3000;
+        // The direction tests only make sense near the target. During a
+        // long-range turn onto the approach the L1 controller holds a
+        // large roll and the distance to the target rises slightly
+        // (closing goes negative) — that is normal geometry, not an
+        // overshoot (223 regression: wrong-direction fired 1s after
+        // entry during a 38-degree turn at 2.7 km from the target).
+        const bool direction_check_ready = distance < 500.0f;
         if (poscontrol.get_state() == QPOS_AIRBRAKE &&
             poscontrol.time_since_state_start_ms() > min_airbrake_ms &&
-            (aspeed < aspeed_threshold || // too low airspeed
-             fabsf(degrees(closing_vel.angle(desired_closing_vel))) > 60 || // wrong direction
-             closing_speed > MAX(desired_closing_speed*1.2, desired_closing_speed+2) || // too fast
-             closing_speed < desired_closing_speed*0.5 || // too slow ground speed
-             labs(plane.ahrs.roll_sensor - plane.nav_roll_cd) > attitude_error_threshold_cd || // bad attitude
-             labs(plane.ahrs.pitch_sensor - plane.nav_pitch_cd) > attitude_error_threshold_cd)) {
+            (speed_on_profile || // speed has come onto the handover speed
+             (direction_check_ready &&
+              (fabsf(degrees(closing_vel.angle(desired_closing_vel))) > 60 || // wrong direction
+               closing_speed < desired_closing_speed*0.5)) || // too slow ground speed
+             (attitude_check_ready &&
+              (labs(plane.ahrs.roll_sensor - plane.nav_roll_cd) > attitude_error_threshold_cd || // bad attitude
+               labs(plane.ahrs.pitch_sensor - plane.nav_pitch_cd) > attitude_error_threshold_cd)))) {
             gcs().send_text(MAV_SEVERITY_INFO,"VTOL position1 v=%.1f d=%.1f h=%.1f dc=%.1f",
                             (double)groundspeed,
                             (double)plane.auto_state.wp_distance,
@@ -2571,10 +2637,20 @@ void QuadPlane::vtol_position_controller(void)
             closing_groundspeed = rel_groundspeed_vector * diff_wp.normalized();
         }
 
-        // calculate speed we should be at to reach the position2
-        // target speed at the position2 distance threshold, assuming
-        // Q_TRANS_DECEL is correct
-        const float stopping_speed = safe_sqrt(MAX(0, distance-position2_dist_threshold) * 2 * transition_decel) + position2_target_speed;
+        // calculate the braking speed profile. The profile starts at the
+        // POSITION1 handover speed and decreases with the distance
+        // travelled since handover: v(s) = sqrt(v0^2 - 2*a*s), floored at
+        // the position2 target speed. Braking thus begins the moment
+        // POSITION1 begins (no cruise segment), and the aircraft reaches
+        // the pos2 threshold speed after ~v0^2/(2*a) metres, closing any
+        // remaining distance in multicopter flight. (224 regression note:
+        // an earlier version had the sign flipped — sqrt(+2*a*s) — which
+        // produced an *accelerating* profile and no braking at all.)
+        const float plan_decel = effective_decel();
+        const float travelled = MAX(poscontrol.pos1_handover_dist_m - distance, 0);
+        const float v0_sq = sq(poscontrol.pos1_speed_limit);
+        const float stopping_speed = safe_sqrt(MAX(v0_sq - travelled * 2 * plan_decel,
+                                                   sq(position2_target_speed)));
 
         float target_speed = stopping_speed;
 
@@ -2607,7 +2683,7 @@ void QuadPlane::vtol_position_controller(void)
         Vector2f target_accel_cms;
         bool have_target_yaw = false;
         float target_yaw_deg;
-        const float target_accel = MIN(accel_needed(distance, sq(closing_groundspeed)), transition_decel*2);
+        const float target_accel = MIN(accel_needed(distance, sq(closing_groundspeed)), plan_decel*2);
         if (distance > 0.1) {
             Vector2f diff_wp_norm = diff_wp.normalized();
             target_speed_xy_cms = diff_wp_norm * target_speed * 100;
@@ -2626,12 +2702,17 @@ void QuadPlane::vtol_position_controller(void)
                    off by more than 60 degrees. Zero target accel and
                    point nose at the landing point. Set target speed
                    to our position2 threshold speed
-                */
+                 */
                 target_accel_cms.zero();
 
-                // allow up to the WP speed when we are further away, slowing to the pos2 target speed
-                // when we are close
-                target_speed = linear_interpolate(position2_target_speed, wp_speed,
+                // Cap the recovery speed well below the WP speed. A
+                // high return speed demands large pitch excursions to
+                // shed, which upsets attitude stability on the way
+                // back. Twice the position2 threshold speed keeps the
+                // recovery gentle; the extra return time is acceptable
+                // for a stable attitude.
+                const float overshoot_speed_cap = 2*position2_target_speed;
+                target_speed = linear_interpolate(position2_target_speed, overshoot_speed_cap,
                                                   distance,
                                                   position2_dist_threshold*1.5,
                                                   2*position2_dist_threshold + stopping_distance(rel_groundspeed_sq));
@@ -2858,6 +2939,18 @@ void QuadPlane::vtol_position_controller(void)
             Location loc2 = loc;
             loc2.change_alt_frame(Location::AltFrame::ABOVE_ORIGIN);
             float target_z = loc2.alt;
+            // Never climb while braking in POSITION1. The pitch-up used
+            // to decelerate unloads the props and the wing lift at high
+            // speed can easily exceed weight; if the landing point is
+            // above the current altitude the Z controller will happily
+            // use that surplus lift to climb, trading braking thrust
+            // for altitude and stretching the deceleration. Clamp the
+            // Z target to the altitude captured at POSITION1 entry
+            // (no target above the aircraft when braking) and let the
+            // descent resume in POSITION2/LAND_DESCEND.
+            if (target_z > poscontrol.max_z_target_cm) {
+                target_z = poscontrol.max_z_target_cm;
+            }
             float zero = 0;
             pos_control->input_pos_vel_accel_z(target_z, zero, 0);
         } else {
@@ -2950,6 +3043,41 @@ QuadPlane::ActiveFwdThr QuadPlane::get_vfwd_method(void) const
  */
 void QuadPlane::assign_tilt_to_fwd_thr(void)
 {
+    /*
+      Prevent the wing from being overloaded when braking from high speed in a VTOL mode.
+      Applied for all fwd-throttle methods (including NONE) so that vehicles with
+      Q_FWD_THR_USE=0 still get the pitch-up limit during back transitions.
+      Must run before the NEW-only early return below.
+
+      The limit is held constant at Q_BCK_PIT_LIM for the whole braking
+      phase (no low-speed relaxation): the deceleration planning in
+      effective_decel() assumes the pitch limit never exceeds this
+      value, and a constant limit keeps the pitch envelope inside the
+      validated aerodynamic range for the entire approach.
+    */
+    const float nav_pitch_upper_limit_cd = 100.0f * q_bck_pitch_lim;
+    if (is_positive(q_bck_pitch_lim)) {
+        const float tconst = 0.5f;
+        const float dt = AP_HAL::millis() - q_pitch_limit_update_ms;
+        q_pitch_limit_update_ms = AP_HAL::millis();
+        if (is_positive(dt)) {
+            const float coef = dt / (dt + tconst);
+            q_bck_pitch_lim_cd = (1.0f - coef) * q_bck_pitch_lim_cd + coef * nav_pitch_upper_limit_cd;
+        }
+
+        plane.nav_pitch_cd = MIN(plane.nav_pitch_cd, (int32_t)q_bck_pitch_lim_cd);
+
+#if HAL_LOGGING_ENABLED
+        AP::logger().WriteStreaming("QBRK",
+                                "TimeUS,SpdScaler,NPULCD,QBPLCD,NPCD",  // labels
+                                "Qffii",    // fmt
+                                AP_HAL::micros64(),
+                                1.0,
+                                (double)nav_pitch_upper_limit_cd,
+                                (int32_t)q_bck_pitch_lim_cd,
+                                (int32_t)plane.nav_pitch_cd);
+#endif
+    }
 
     const auto fwd_thr_active = get_vfwd_method();
     if (fwd_thr_active != ActiveFwdThr::NEW) {
@@ -2981,37 +3109,6 @@ void QuadPlane::assign_tilt_to_fwd_thr(void)
             // take the lesser of the two limits
             q_fwd_pitch_lim_cd = (float)aparm.angle_max;
         }
-    }
-
-    // Prevent the wing from being overloaded when braking from high speed in a VTOL mode
-    float nav_pitch_upper_limit_cd = 100.0f * q_bck_pitch_lim;
-    float aspeed;
-    if (is_positive(q_bck_pitch_lim) && ahrs.airspeed_estimate(aspeed)) {
-        const float reference_speed = MAX(plane.aparm.airspeed_min, MIN_AIRSPEED_MIN);
-        float speed_scaler = sq(reference_speed / MAX(aspeed, 0.1f));
-        nav_pitch_upper_limit_cd *= speed_scaler;
-        nav_pitch_upper_limit_cd = MIN(nav_pitch_upper_limit_cd, (float)aparm.angle_max);
-
-        const float tconst = 0.5f;
-        const float dt = AP_HAL::millis() - q_pitch_limit_update_ms;
-        q_pitch_limit_update_ms = AP_HAL::millis();
-        if (is_positive(dt)) {
-            const float coef = dt / (dt + tconst);
-            q_bck_pitch_lim_cd = (1.0f - coef) * q_bck_pitch_lim_cd + coef * nav_pitch_upper_limit_cd;
-        }
-
-        plane.nav_pitch_cd = MIN(plane.nav_pitch_cd, (int32_t)q_bck_pitch_lim_cd);
-
-#if HAL_LOGGING_ENABLED
-        AP::logger().WriteStreaming("QBRK",
-                                "TimeUS,SpdScaler,NPULCD,QBPLCD,NPCD",  // labels
-                                "Qffii",    // fmt
-                                AP_HAL::micros64(),
-                                (double)speed_scaler,
-                                (double)nav_pitch_upper_limit_cd,
-                                (int32_t)q_bck_pitch_lim_cd,
-                                (int32_t)plane.nav_pitch_cd);
-#endif
     }
 
     float fwd_thr_scaler;
@@ -4161,7 +4258,64 @@ float QuadPlane::stopping_distance(float ground_speed_squared) const
     // use v^2/(2*accel). This is only quite approximate as the drag
     // varies with pitch, but it gives something for the user to
     // control the transition distance in a reasonable way
-    return ground_speed_squared / (2 * transition_decel);
+    return ground_speed_squared / (2 * MAX(transition_decel, effective_decel()));
+}
+
+/*
+  Total stopping distance for the two-phase VTOL landing deceleration:
+    1. AIRBRAKE phase at idle throttle: deceleration comes from idle
+       prop drag plus airframe drag only (measured ~0.6 m/s/s with no
+       pitch change), down to the POSITION1 handover speed.
+    2. POSITION1 phase at the Q_BCK_PIT_LIM pitch limit: measured
+       ~1.2 m/s/s (airframe drag dominates; the pitch-limited thrust
+       vector contributes little because the wing unloads the props at
+       the balloon).
+  Planning with the nominal transition_decel (or effective_decel alone)
+  starts AIRBRAKE too late, leaving excess speed at the handover and
+  overshooting the landing point. The airbrake decel is approximated as
+  a fraction of the POSITION1 decel; both are scaled by the measured
+  ratio so the numbers track the observed vehicle behaviour.
+ */
+float QuadPlane::stopping_distance_2phase(float ground_speed) const
+{
+    const float handover_speed = MAX(plane.aparm.airspeed_min - 2, 1.0f);
+    const float decel_pos1 = effective_decel();
+    // AIRBRAKE (idle, no pitch) achieves roughly half the deceleration
+    // of the pitch-up phase. Measured 0.63 vs 1.17 on the reference
+    // vehicle; 0.5x is a slightly conservative planning value.
+    const float decel_airbrake = MAX(0.5f * decel_pos1, 0.3f);
+    const float d_airbrake = MAX(sq(ground_speed) - sq(handover_speed), 0) / (2 * decel_airbrake);
+    const float d_pos1 = sq(handover_speed) / (2 * decel_pos1);
+    return d_airbrake + d_pos1;
+}
+
+/*
+  effective deceleration available in POSITION1 braking. The pitch-up
+  used to decelerate is limited to Q_BCK_PIT_LIM (constant, no
+  low-speed relaxation), so the achievable deceleration from thrust
+  vector tilt is g*tan(Q_BCK_PIT_LIM), which for small limits can be
+  well below Q_TRANS_DECEL. Using the limited value keeps the
+  stopping-distance and speed-profile maths consistent with what the
+  pitch limit actually allows, so braking starts early enough to stop
+  at the landing point instead of overshooting it.
+ */
+float QuadPlane::effective_decel(void) const
+{
+    if (!is_positive(q_bck_pitch_lim)) {
+        // no pitch limit, Q_TRANS_DECEL is achievable
+        return transition_decel;
+    }
+    // Deceleration achievable in the pitch-limited POSITION1 phase.
+    // Measured on the reference vehicle: with a 10 deg pitch limit the
+    // aircraft balloons (wing lift unloads the props, Z controller cuts
+    // their throttle), so the pitch-limited "thrust vector" term
+    // g*tan(pitch) overestimates what is available; the realised decel
+    // is drag-dominated at ~0.67 of the thrust-vector value. Derate
+    // accordingly and cap at Q_TRANS_DECEL. Floor of 0.5 m/s/s guards
+    // against absurdly small Q_BCK_PIT_LIM values stalling the
+    // approach entirely.
+    const float decel_from_pitch = 0.67f * GRAVITY_MSS * tanf(radians(q_bck_pitch_lim));
+    return MAX(MIN(transition_decel, decel_from_pitch), 0.5f);
 }
 
 /*
@@ -4426,8 +4580,14 @@ Vector2f QuadPlane::landing_desired_closing_velocity()
         return Vector2f(0,0);
     }
 
-    // base target speed based on sqrt of distance
-    float target_speed = safe_sqrt(2*transition_decel*dist);
+    // base target speed based on sqrt of distance. Use the
+    // pitch-limit-aware decel so the desired closing speed matches what
+    // the aircraft can actually deliver when Q_BCK_PIT_LIM is active.
+    // With the nominal transition_decel here the desired speed is too
+    // high, and the "closing too fast" exit test can fire prematurely,
+    // dropping us into POSITION1 with excess speed that then overshoots
+    // the landing point.
+    float target_speed = safe_sqrt(2*MAX(transition_decel, effective_decel())*dist);
 
     // don't let the target speed go above landing approach speed
     const float eas2tas = plane.ahrs.get_EAS2TAS();
@@ -4481,8 +4641,15 @@ float QuadPlane::get_land_airspeed(void)
     }
 
     if (qstate == QPOS_AIRBRAKE) {
-        // during airbraking ask TECS to slow us to stall speed
-        return plane.aparm.airspeed_min;
+        // AIRBRAKE idles the throttle (throttle demand is forced to idle
+        // in vtol_position_controller) and decelerates by drag alone.
+        // Ask TECS for a low target so it does not fight the
+        // deceleration; the phase exits normally at the handover speed
+        // (see the speed_on_profile logic in vtol_position_controller).
+        const Vector2f diff_wp = plane.current_loc.get_distance_NE(plane.next_WP_loc);
+        const float dist = diff_wp.length();
+        const float profile_speed = safe_sqrt(2*MAX(transition_decel, effective_decel())*MAX(dist, 0));
+        return MIN(profile_speed, plane.aparm.airspeed_min);
     }
     
     // calculate speed based on landing desired velocity
