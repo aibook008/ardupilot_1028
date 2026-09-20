@@ -37,6 +37,23 @@ Q_RTL_MODE       3
 Q_TRANSITION_MS 500000
 Q_TILT_RATE_UP  10
 
+# θ–V corridor gate (docs/tilt_corridor_optimization.md V0.5+).
+# Strategy: wait-for-speed in WAIT (hold_hover); TIMER only sheds VTOL throttle.
+# CRD_EN=1: WAIT ignores Q_TILT_MAX — only θ_max(V) caps tilt (need sinθ for accel).
+# Must keep AIRSPEED_MIN ≈ CRD_V4 so TIMER does not run long with tilt frozen.
+# A/B back to stock: CRD_EN 0 + AIRSPEED_MIN 45 (+ Q_TILT_MAX 45 applies again).
+Q_TILT_CRD_EN    0
+Q_TILT_CRD_MRG   0
+Q_TILT_CRD_T1    10
+Q_TILT_CRD_V1    10
+Q_TILT_CRD_T2    20
+Q_TILT_CRD_V2    25
+Q_TILT_CRD_T3    30
+Q_TILT_CRD_V3    35
+Q_TILT_CRD_T4    45
+Q_TILT_CRD_V4    45
+# Q_TILT_MAX 45 above is stock WAIT cap when CRD_EN=0 only.
+
 # prop-table model: T ≈ actuator^2 (T∝RPM²), hover actuator ≈0.68,
 # W/T_max = 3727/7656 ≈ 0.49 → expo=1.0 (pure sqrt inversion), hover thrust 0.49
 Q_M_THST_HOVER   0.49
@@ -79,9 +96,9 @@ Q_WP_SPEED_UP    100
 Q_WP_SPEED_DN     80
 Q_WP_ACCEL_Z      50
 
-# Transition / speeds (cruise ~48.6 m/s from 数据库)
+# Transition / speeds (cruise 55; MIN aligned to CRD_V4 when gate on)
 AIRSPEED_CRUISE  55
-AIRSPEED_MIN     45
+AIRSPEED_MIN     50
 AIRSPEED_MAX     80
 ARSPD_USE        1
 
