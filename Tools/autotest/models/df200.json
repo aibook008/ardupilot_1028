@@ -11,6 +11,10 @@
 # QuadPlane does mass *= 1.5 after Frame::init → flight mass = json_mass * 1.5.
 # This build uses Excel MTOW 380 kg → json mass = 380/1.5.
 # Hover inertia diagonal from Excel 垂起矩阵: Ixx=783.6, Iyy=464.3, Izz=1052.3
+# (2026-09-21: back to Excel values. History: cac1c2c Excel → 606be35
+# isolation small-I [200.6,464.3,500.3] → f6867ac undocumented [700.6,464.3,1164.3]
+# "works well"; see docs/df200_model_alignment_plan.md §1.2. Parm gains were
+# restored from 086 against THIS Excel set, so json and parm are consistent again.)
 #
 # Thrust: peak Σ ≈ 4*1379 + 4*540 = 7676 N → T/W@380 ≈ 2.06
 # hoverThrOut=0.30 → T_max_model = mass_json*g/0.30 ≈ 8.28 kN → T/W_flight≈2.22
@@ -47,44 +51,49 @@
     "mdrag_coef" : 0.2,
     "num_motors" : 8,
 
-    "moment_inertia" : [700.6, 464.3, 1164.3],
+    "moment_inertia" : [783.6, 464.3, 1052.3],
 
-    # Force/moment isolation trial:
-    # - tilt motors Z coplanar at 0 (was front -0.409 / rear -0.944) to kill
-    #   Tilt=30° equal-thrust My_geom ≈ z*Fx bias.
-    # - motor*_yaw = ±0.5 (was ±3) to shrink rotor reaction Mz (~1/6).
-    # Outer verts Z left at Excel -0.270 (Fx=0 when untilted; not the My term).
-    # Expect DF200ROTOR pre-onset: |Mgeom_y| and |Mrotor_z| much smaller.
+    # 2026-09-21: restore Excel-faithful geometry (was isolation-trial Z=0,
+    # see docs/df200_model_alignment_plan.md §2-A). Hover unaffected:
+    # pitch_min is now 0 (SIM_Frame.cpp df200_motors, not jt20's +10°), so
+    # z·Fx=0 at hover; the z·T·sinθ pitch bias reappears only mid-transition
+    # (tilt≈30-45°, ~600 N·m order) — the term flysim's model has and ours lacked.
+    # Motor yaw stays ±9 (f6867ac) until the reaction-torque model is
+    # physically re-derived (plan §2-D).
+    # Tilt motor Z coplanar trial (606be35..f6867ac) REVERTED:
+    # - tilt motors Z back to Excel: front -0.409 / rear -0.944 (V-tail pods)
+    # - outer verts Z back to Excel -0.270 (json:56 comment was wrong: they
+    #   were also zeroed in 606be35, not "left at -0.270" as claimed here)
     # M1 FR tilt  ①
-    "motor1_position"  : [1.720,  1.315, 0.0],
+    "motor1_position"  : [1.720,  1.315, -0.409],
     "motor1_vector"    : [0.0, 0.0, -1.0],
     "motor1_yaw"       : 9,
     # M2 RL tilt  ⑥
-    "motor2_position"  : [-1.720, -1.315, 0.0],
+    "motor2_position"  : [-1.720, -1.315, -0.944],
     "motor2_vector"    : [0.0, 0.0, -1.0],
     "motor2_yaw"       : 9,
     # M3 FL tilt  ⑤
-    "motor3_position"  : [1.720, -1.315, 0.0],
+    "motor3_position"  : [1.720, -1.315, -0.409],
     "motor3_vector"    : [0.0, 0.0, -1.0],
     "motor3_yaw"       : -9,
     # M4 RR tilt  ②
-    "motor4_position"  : [-1.720,  1.315, 0.0],
+    "motor4_position"  : [-1.720,  1.315, -0.944],
     "motor4_vector"    : [0.0, 0.0, -1.0],
     "motor4_yaw"       : -9,
     # M5 FR vert  ③
-    "motor5_position"  : [1.150,  2.732, 0.0],
+    "motor5_position"  : [1.150,  2.732, -0.270],
     "motor5_vector"    : [0.0, 0.0, -1.0],
     "motor5_yaw"       : 9,
     # M6 RL vert  ⑧
-    "motor6_position"  : [-1.150, -2.732, 0.0],
+    "motor6_position"  : [-1.150, -2.732, -0.270],
     "motor6_vector"    : [0.0, 0.0, -1.0],
     "motor6_yaw"       : 9,
     # M7 FL vert  ⑦
-    "motor7_position"  : [1.150, -2.732, 0.0],
+    "motor7_position"  : [1.150, -2.732, -0.270],
     "motor7_vector"    : [0.0, 0.0, -1.0],
     "motor7_yaw"       : -9,
     # M8 RR vert  ④
-    "motor8_position"  : [-1.150,  2.732, 0.0],
+    "motor8_position"  : [-1.150,  2.732, -0.270],
     "motor8_vector"    : [0.0, 0.0, -1.0],
     "motor8_yaw"       : -9
 }

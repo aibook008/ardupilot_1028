@@ -625,7 +625,14 @@ void Frame::calculate_forces(const Aircraft &aircraft,
     // blow-up -> root cause confirmed. NOT a final fix - diagnosis only.
     // Run#1 leave true (baseline with table model); Run#2 flip to false to
     // verify the table model alone kills the TIMER positive-feedback blow-up.
-    static bool df200_zero_gyro_enable = true;
+    // Run#2 (2026-09-21): flipped to false. Rationale: the table model broke
+    // the amplifier — outer prop60_thrust(rpm) has no velin at all, inner
+    // prop40 dT/dv ≈ -7..-10 N/(m/s) (wind-tunnel advance effect) vs the
+    // momentum disc's 50..112 N/(m/s) at AS≈50, so loop gain ≈0.1 (was >1
+    // at 161). Physical position%gyro inflow is restored. If the TIMER
+    // blow-up returns, the table model did NOT kill the loop and §11.10's
+    // real fixes (velin clamp / collective-only tilt>30°) are needed.
+    static bool df200_zero_gyro_enable = false;
     const bool df200_zero_gyro_for_motor =
         df200_frame && df200_zero_gyro_enable &&
         aircraft.get_velocity_air_ef().length() >= 25.0f;  // AS>=25 only
