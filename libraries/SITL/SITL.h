@@ -414,6 +414,19 @@ public:
     // minimum throttle for addition of ins noise
     AP_Float ins_noise_throttle_min;
 
+    // aero perturbation scales (DF-200 bias simulation, docs/df200_bias_sim.md).
+    // Applied at the SIM_Plane/SIM_Frame consumption points; 1.0/0.0 = baseline.
+    AP_Float aero_cla_scale;
+    AP_Float aero_cd0_scale;
+    AP_Float aero_ind_scale;
+    AP_Float aero_cma_scale;
+    AP_Float aero_elev_scale;
+    AP_Float aero_ail_scale;
+    AP_Float aero_rud_scale;
+    AP_Float aero_cgx_offset;
+    AP_Float mass_scale;
+    AP_Float inertia_scale;
+
     struct {
         AP_Float x;
         AP_Float y;
@@ -567,6 +580,10 @@ public:
 
     // clamp simulation - servo channel starting at offset 1 (usually ailerons)
     AP_Int8 clamp_ch;
+
+    // test-only motor failure injection: bitmask of motors whose RPM is forced
+    // to zero (physical prop-out failure). bit0 = motor 1. 0 = none failed
+    AP_Int16 motor_fail_mask;
 
 #if AP_SIM_INS_FILE_ENABLED
     enum INSFileMode {

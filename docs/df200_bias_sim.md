@@ -1,9 +1,34 @@
-# DF-200 拉偏仿真自动化流水线 — 开发计划
+# DF-200 拉偏仿真自动化流水线 — 开发计划 + 实施状态
 
-> 日期：2026-09-20
+> 日期：2026-09-20 定版；**2026-09-29 更新实施状态（§0a/§9/§10）**
 > 目标：为协议 1.4「鲁棒性拉偏仿真」（见 `docs/飞控开发说明.md` 节点一）打通自动化测试流程——**升阻特性、舵效、重量重心、风场四维拉偏矩阵**，一键跑批、逐 case 出结果档案，支撑仿真测试报告（节点 1.5）。
 > 前提：DF-200 全链 SITL 已通（正向转换 208 架次、反向刹车链 225 架次验证，见 `docs/vtol_df200.md`、`docs/vtol_reverse_braking_summary.md`）。
 > 所有行号基于工作区 HEAD `06f5093`（2026-09-20 验证）。
+
+---
+
+## 0a. 实施状态总览（2026-09-29）
+
+> 阅读提示：§0-§8 为 09-20 定版的设计计划（保留作设计依据）；**§9 为实际落地详述**（参数名、idx、脚本用法均以 §9 为准——如升降舵效参数实名为 `SIM_AERO_ELE_SCL`，计划稿中的 `SIM_AERO_ELEV_SCL` 未采用）；§10 为剩余工作。
+
+原计划的 6 步实施顺序，当前进度：
+
+| 步骤（§6） | 状态 | 说明 |
+|------|------|------|
+| 1. C++ 参数组（§2） | ✅ **已完成** | 十参数已实装（参数名/idx 与计划有差异，见 §9.1），编译通过，默认值零漂移 |
+| 2. mission 5 件套（§3） | ✅ **已完成（4+1）** | `DF200_{full,hover,transition,brake,fw_cruise}.txt` 已建（§9.2）；另有 `DF200_hover_gqc.txt`、`DF_POINT.TXT` |
+| 3. df200.py TestSuite（§4） | ⚠️ **方案变更** | 未走 autotest.py TestSuite 路线，改为**独立 MAVLink 脚本** `docs/scripts/df200_case_run.py`（§9.3），功能等价且免 TestSuite 框架依赖 |
+| 4. 分科目 4 测试 | ✅ 经手动/脚本验证 | hover / transition / brake / full 均有成功飞行记录 |
+| 5. PerturbationMatrix | 🟡 **部分跑通** | 矩阵模式已跑：cd0+30、cla-20 PASS（14 里程碑）；baseline 全链成功但状态字段有历史版本残留（见 §9.5）；早期 FAIL 均为连接/注入时序问题，已由当前脚本版本修复 |
+| 6. 指标离线分析 | ⬜ 未接入 | `df200_transition_log.py` / `df200_force_budget.py` 可对 BIN 手动分析，未批量挂接 |
+
+配套新增（计划外）：
+
+- `docs/scripts/df200_mission_run.py` —— 纯脚本任务执行器（hover/auto 双 profile，不依赖 QGC/MAVProxy）；
+- `docs/scripts/df200_sitl_restart.sh` —— 矩阵 case 间的 SITL 重启包装（kill → `-w` 清参 → KSFO 冷启动）；
+- **模型对齐前置工作**：`df200.json` 恢复 Excel 真实几何 + zero-gyro 诊断开关关闭（Run#1/Run#2 验证），SITL 进入"真实几何+真实入流+桨表推力"全物理配置——拉偏矩阵的 baseline 以此为准（总结见 `docs/bias_sim.md`，详析见 `docs/df200_model_alignment_plan.md`）。
+
+---
 
 ---
 
@@ -283,3 +308,151 @@ def test_perturbation_matrix(self):
 ## 8. 一句话状态
 
 **方案定版（2026-09-20）：SIM_AERO_* 十参数 + DF200 TestSuite + KSFO 五 mission 三件套；判据只判里程碑；实现顺序 C++ → mission → Suite → 矩阵。**
+**实施推进（2026-09-29）：C++ 参数组与 mission 已落地；TestSuite 改为独立脚本 df200_case_run.py；矩阵模式已跑通（cd0+30 / cla-20 PASS），余 case 待批量执行。**
+
+---
+
+# 9. 已完成实现详述（2026-09-29）
+
+> 本章记录实际落地的代码与用法，与上方原计划（§0-§8，保留作设计依据）冲突处以本章为准。
+
+## 9.1 C++ 拉偏参数组：已实装（未提交，工作区）
+
+实装与计划（§2.1）的差异：参数最终挂在 **SIM 参数空间**、名字去掉 `SIM_` 前缀由前缀规则自动带上、idx 复用表内空洞（11-14/18-20/7-9），而非计划中的 64-73。定义在 `libraries/SITL/SITL.cpp:505` 起（带 `@Param/@DisplayName/@Description/@Range` 注释，20 行文档注解），成员在 `libraries/SITL/SITL.h:419` 附近：
+
+| 参数（实际名） | idx | 默认 | 语义（乘入点） |
+|------|-----|------|------|
+| `SIM_AERO_CLA_SCL` | 11 | 1.0 | `c_lift_a`，乘在 `liftCoeff()`（`SIM_Plane.cpp:251`） |
+| `SIM_AERO_CD0_SCL` | 12 | 1.0 | `c_drag_p`，乘在 `dragCoeff()`（`SIM_Plane.cpp` 绑定行） |
+| `SIM_AERO_IND_SCL` | 13 | 1.0 | oswald **除**以该值（`MAX(ind_scale,0.05)` 防除零），>1 更差 |
+| `SIM_AERO_CMA_SCL` | 14 | 1.0 | `c_m_a`，乘在 `getTorque()` |
+| `SIM_AERO_ELE_SCL` | 18 | 1.0 | `c_m_deltae` × elev_scale |
+| `SIM_AERO_AIL_SCL` | 19 | 1.0 | `c_l_deltaa` × ail_scale |
+| `SIM_AERO_RUD_SCL` | 20 | 1.0 | `c_n_deltar` × rud_scale |
+| `SIM_AERO_CGX_OFF` | 7 | 0.0 | CGOffset.x 增量（+ 后移），m，Range −0.3~0.3 |
+| `SIM_MASS_SCL` | 8 | 1.0 | 质量，**双消费点同步**（见下） |
+| `SIM_INERTIA_SCL` | 9 | 1.0 | 三轴惯量分母同乘（`MAX(_,0.05)` 防除零） |
+
+乘入点全部在**消费端**（计划 §2.2 原则兑现）：默认 1.0/0.0 时与标定基线逐位一致。`/tmp/df200_aero.log` 力矩分解已按 §2.3 要求同步 scale（`SIM_Plane.cpp` df200 日志分支内 ail/elev/rud scale 与 getTorque 同源）。
+
+质量双消费点已同步（§2.5 硬要求兑现）：
+- `SIM_Frame.cpp`：`body_accel = thrust / (gross_mass() * mass_scale)`；
+- `SIM_Plane.cpp:618`：`mass_eff = mass * mass_scale`。
+
+惯量：`SIM_Frame.cpp` 三行 `rot_accel = torque / (moment_of_inertia * inertia_scale)`（计划 §2.5 中"二选一"的选择：乘在 Frame 端除法处；`SIM_QuadPlane.cpp:170-173` 的单位修正用同一 `frame->get_inertia()` 未动——其引用的仍是无缩放 json 值，两侧比值一致故行为正确，若后续做惯量拉偏对账需注意此处口径）。
+
+编译：`./waf plane` 通过。
+
+## 9.2 mission 文件：已建（KSFO，未提交）
+
+`Tools/autotest/Generic_Missions/` 下，QGC WPL 110 格式，home=KSFO（37.619373,-122.376637,5.3,118）：
+
+| 文件 | 内容 | 用途 |
+|------|------|------|
+| `DF200_full.txt` | home → VTOL takeoff(84, 50m) → WP(北 2.8km) → VTOL land(85) | 全链（转换+FW+返场 VTOL 降落），A→B 直线约 2.5 min |
+| `DF200_brake.txt` | takeoff(30m) → DO_VTOL_TRANSITION(2200,p1=4) → WP(北 5.5km, 120m) → **RTL(20)** → VTOL land | 反向刹车链（RTL 触发 AIRBRAKE→交棒→多旋翼降落） |
+| `DF200_transition.txt` / `DF200_fw_cruise.txt` / `DF200_hover.txt` | 对应分科目 | 单科目 |
+| `DF200_hover_gqc.txt`、`DF_POINT.TXT` | 辅助/草稿 | — |
+
+注：`full` 的回程段按脚本化返场（position1/position2 链）实现而非原计划的 4.5km 直线 RTL——VOL position1/Overshoot/position2 里程碑在 baseline_004 中全部出现，反向链触发正常。
+
+## 9.3 运行脚本：`docs/scripts/df200_case_run.py`（核心）
+
+**取代原计划的 `Tools/autotest/df200.py` TestSuite 方案**。理由：不依赖 autotest.py 框架（其 SITL 启动/串口分配对多 case 矩阵不友好），直接 pymavlink 连 SITL 串口，单文件闭环。
+
+单 case 闭环流程（`run_case()`，`df200_case_run.py:177`）：
+
+```text
+建档案目录 logs/df200_cases/<case>_<NNN>/
+→ [可选] 执行 restart_cmd 重启 SITL（默认 df200_sitl_restart.sh：kill 旧 SITL → -w 清参 → KSFO 冷启动，等 20s）
+→ 连接（5762/5760 双端口重试，真心跳校验）
+→ 注入拉偏参数（PARAM_SET，带回读校验）
+→ 上传 mission（逐条握手 + ack 校验）
+→ AUTO + arm
+→ 监控 STATUSTEXT 至 DISARMED，抓取 14 类里程碑文本
+→ 归档：run.log + flight.BIN(最新 logs/*.BIN 拷贝) + result.json（params/里程碑/status）
+→ PASS 判定：Land complete 出现 且 无"未伴随 Land complete 的 Hit ground"
+```
+
+矩阵模式：`--matrix` 后接 CASE_LIB 名单，逐 case 顺序执行（每 case 前自动重启 SITL），结束写 `logs/df200_cases/summary_<ts>.md` 汇总表。内置 CASE_LIB 12 个 case（baseline/cla±20/cd0+30/ind+30/cma-25/ele-30/ail-30/rud-30/cgx+8cm/mass+15/inertia+30）。
+
+**用法**（仓库根目录）：
+
+```bash
+# 前提：已 ./waf configure --board sitl && ./waf plane（工作区含拉偏参数改动）
+
+# 1) 单 case（CASE_LIB 名）
+python3 docs/scripts/df200_case_run.py --case cd0+30
+
+# 2) 单 case（任意参数组合）
+python3 docs/scripts/df200_case_run.py --case mytest --param SIM_AERO_CGX_OFF=0.08 --param SIM_MASS_SCL=1.1
+
+# 3) 矩阵（每 case 自动重启 SITL 清参数）
+python3 docs/scripts/df200_case_run.py --matrix baseline cla+20 cla-20 cd0+30
+
+# 4) 换 mission / 超时 / 禁用重启
+python3 docs/scripts/df200_case_run.py --case baseline --mission Tools/autotest/Generic_Missions/DF200_brake.txt \
+    --max-time 900 --restart-cmd none   # none=复用现有 SITL（注意参数会跨 case 泄漏）
+```
+
+产物：
+
+```text
+logs/df200_cases/<case>_<NNN>/
+  run.log        # 全程脚本输出（STATUSTEXT 时间线）
+  flight.BIN     # DataFlash 日志拷贝
+  result.json    # case/params/milestones[]/status/log_bin
+logs/df200_cases/summary_<ts>.md   # 矩阵汇总表
+```
+
+## 9.4 辅助脚本：`df200_mission_run.py`（手动科目执行器）
+
+定位：**SITL 已在跑**时的轻量任务执行（配合 QGC 或人工观察），case_run.py 是它的"全自动矩阵"版。
+
+```bash
+# hover profile：GUIDED→MAV_CMD_NAV_TAKEOFF→QLOITER 悬停 --hold 秒→QLAND→disarm
+python3 docs/scripts/df200_mission_run.py --profile hover --alt 20 --hold 20
+
+# auto profile：上传 mission→AUTO→arm→监控到 disarm（--param 可先注入拉偏）
+python3 docs/scripts/df200_mission_run.py --profile auto \
+    Tools/autotest/Generic_Missions/DF200_brake.txt --param SIM_MASS_SCL=1.15
+```
+
+细节：连接优先 5762（5760 常被 QGC 占用）；mission 上传后**下载回读校验**；hover profile 用 `MAV_CMD_NAV_TAKEOFF`（GUIDED 下走 `QuadPlane::do_user_takeoff`），QLOITER 属 `in_vtol_mode()` 不触发 FW 转换状态机。
+
+## 9.5 矩阵执行记录（截至 09-29）
+
+`logs/df200_cases/` 现存档案：
+
+| case | 尝试 | 最终状态 | 里程碑数 | 备注 |
+|------|------|---------|---------|------|
+| cd0+30 | 2 | **PASS** | 14 | 首个全绿 case |
+| cla-20 | 3 | **PASS** | 14 | 前 2 次 FAIL 为 param 注入时序（旧版脚本） |
+| cla+20 | 2 | 全链飞完 | 14 | result.json 状态字段为 RUNNING（旧版脚本无 PASS 判定），飞行本身成功（Hit ground 0.50 m/s） |
+| baseline | 4 | 全链飞完 | 14 | 同上；baseline_004 全程：takeoff→转换(70.4s reached)→FW done→position1→Overshoot→position2→Land final→363s 触地 0.50 m/s→369s Land complete+disarm |
+
+早期 FAIL 模式与教训（已修复/规避）：
+- `FAIL: param inject`（cd0+30_001/cla-20_001）：SITL 刚启动串口服务未就绪——现版 `connect()` 加真心跳校验 + 跨端口重试解决；
+- `FAIL: upload`（baseline_002）：mission 上传握手中断——现版逐条 ack 校验 + 重试；
+- 状态字段 `RUNNING` 残留：旧版脚本缺 `ok_end` PASS 判定（`df200_case_run.py:273-282` 现版已加），按现行代码逻辑复算这些 case 均应为 PASS，飞行日志本身无异常。
+
+## 9.6 与模型对齐工作的关系（baseline 口径）
+
+拉偏矩阵的"baseline"自 2026-09-21 起指向**新物理配置**：`df200.json` Excel 真实几何（惯量 [783.6,464.3,1052.3]、倾转桨 Z −0.409/−0.944）+ 桨表推力模型 + 真实 `position%gyro` 入流（`ed2e650` 关闭 zero-gyro 诊断开关，Run#2 验证 |pqr|<1.5 rad/s）。意义：
+
+1. 拉偏出来的敏感度是相对"物理正确"的基准，而非叠加了诊断性阉割的旧基准；
+2. 过渡中段升降舵配平 −1000 N·m 级 z·Fx 项成为 baseline 常态——后续若某拉偏 case 在同段 FAIL，先对照 baseline_004 的 Elev/My 水平再下结论；
+3. 待办：反扭物理化（`motor*_yaw=±9` → P/Ω）落地后 baseline 需再刷新一次，届时矩阵整体重跑。
+
+---
+
+# 10. 剩余工作（更新于 2026-09-29）
+
+| 项 | 优先级 | 说明 |
+|----|--------|------|
+| 矩阵全量跑批 | 高 | CASE_LIB 12 case 中 3 个已有全链记录；`--matrix baseline cla+20 cla-20 cd0+30 ind+30 cma-25 ele-30 ail-30 rud-30 cgx+8cm mass+15 inertia+30` 一键补全（约 30-60 min） |
+| 工作区提交 | 高 | C++ 参数组（SIM_Plane/SIM_Frame/SITL.*）、mission 5 件套、脚本三件、`SIM_MotorTable.h` 均未提交；跑批前固化，避免环境漂移 |
+| summary 汇总表接入指标摘要 | 中 | 对每个 flight.BIN 批量跑 `df200_transition_log.py`，把掉高/姿态摘要并进 result.json（§6 步骤 6） |
+| 风场维度 case | 中 | CASE_LIB 尚无 `SIM_WIND_SPD/DIR/TURB` 组合 case，格式已支持（params dict 任意键） |
+| autotest.py TestSuite 路线 | 低 | 独立脚本已满足需求；若需进 CI（autotest 体系）再补 `Tools/autotest/df200.py` |
+| baseline 刷新联动 | 低 | 反扭物理化落地后重跑 baseline + 全矩阵 |

@@ -648,6 +648,12 @@ void Frame::calculate_forces(const Aircraft &aircraft,
     float pm_thrustmag[8];
     Vector3f pm_mvel[8];
 
+    // test-only motor failure injection (SIM_MOT_FAIL): bitmask of motors whose
+    // physical output is forced to zero (prop-out failure). The mixer keeps
+    // commanding the failed motor, so thrust-loss detection and control
+    // reallocation see a genuine failure signature
+    const uint16_t motor_fail_mask = _sitl->motor_fail_mask.get();
+
     for (uint8_t i=0; i<num_motors; i++) {
         Vector3f mtorque, mthrust;
         if (df200_rotor_log) {
@@ -665,6 +671,14 @@ void Frame::calculate_forces(const Aircraft &aircraft,
             }
         } else {
             motors[i].calculate_forces(input, motor_offset, mtorque, mthrust, vel_air_bf, gyro_for_motor, air_density, battery->get_voltage(), use_drag);
+        }
+        if (motor_fail_mask & (1U << i)) {
+            // declared failed (bit position = motor index, bit0 = motor 1):
+            // no thrust, no torque, rpm zero
+            mtorque.zero();
+            mthrust.zero();
+            rpm[motor_offset+i] = 0;
+            continue;
         }
         torque += mtorque;
         thrust += mthrust;
@@ -743,9 +757,13 @@ void Frame::calculate_forces(const Aircraft &aircraft,
     }
 
     // calculate total rotational acceleration
-    rot_accel.x = torque.x / model.moment_of_inertia.x;
-    rot_accel.y = torque.y / model.moment_of_inertia.y;
-    rot_accel.z = torque.z / model.moment_of_inertia.z;
+    // inertia perturbation (SIM_INERTIA_SCL, docs/df200_bias_sim.md §2.5):
+    // divides all three axes; >1 means higher inertia / slower response.
+    // (_sitl already declared at :614 in this function.)
+    const float inertia_scale = _sitl ? MAX(_sitl->inertia_scale, 0.05f) : 1.0f;
+    rot_accel.x = torque.x / (model.moment_of_inertia.x * inertia_scale);
+    rot_accel.y = torque.y / (model.moment_of_inertia.y * inertia_scale);
+    rot_accel.z = torque.z / (model.moment_of_inertia.z * inertia_scale);
 
     if (terminal_rotation_rate > 0) {
         // rotational air resistance
@@ -775,7 +793,11 @@ void Frame::calculate_forces(const Aircraft &aircraft,
         thrust -= drag_bf;
     }
 
-    body_accel = thrust/aircraft.gross_mass();
+    // mass perturbation (SIM_MASS_SCL, docs/df200_bias_sim.md §2.5): paired
+    // with the same scale at Plane::calculate_forces accel_body /= mass, or
+    // the plane/quad parts see inconsistent effective gravity.
+    const float mass_scale = _sitl ? _sitl->mass_scale : 1.0f;
+    body_accel = thrust/(aircraft.gross_mass() * mass_scale);
 }
 
 

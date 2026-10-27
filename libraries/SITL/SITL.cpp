@@ -502,6 +502,65 @@ const AP_Param::GroupInfo SIM::var_info2[] = {
     // @Description: Amplitude scaling of motor noise relative to gyro/accel noise
     AP_GROUPINFO("VIB_MOT_MULT", 63, SIM,  vibe_motor_scale, 1.0f),
 
+    // Aero perturbation group (DF-200 bias simulation, docs/df200_bias_sim.md).
+    // Multiplied at the consumption points in SIM_Plane/SIM_Frame, NOT at the
+    // -df200 coefficient init, so 1.0/0.0 defaults reproduce the calibrated
+    // baseline exactly. Runtime PARAM_SET takes effect next simulation step.
+    // idx 11-16 and 6-9 are unused holes in this table (AP_Param caps group
+    // idx at 63, AP_Param.cpp check_group_info).
+
+    // @Param: AERO_CLA_SCL
+    // @DisplayName: Aero lift-curve-slope scale
+    // @Description: Multiplies c_lift_a (lift curve slope) at the liftCoeff() consumption point. 1.0 = calibrated baseline
+    // @Range: 0.5 1.5
+    AP_GROUPINFO("AERO_CLA_SCL", 11, SIM, aero_cla_scale, 1.0f),
+    // @Param: AERO_CD0_SCL
+    // @DisplayName: Aero zero-lift drag scale
+    // @Description: Multiplies c_drag_p at the dragCoeff() consumption point. 1.0 = calibrated baseline
+    // @Range: 0.5 2.0
+    AP_GROUPINFO("AERO_CD0_SCL", 12, SIM, aero_cd0_scale, 1.0f),
+    // @Param: AERO_IND_SCL
+    // @DisplayName: Aero induced-drag scale
+    // @Description: Divides Oswald efficiency (induced drag CDi = CL^2/(pi*e*AR) with e/Aero_IND_SCL). Values >1 mean worse induced drag
+    // @Range: 0.5 2.0
+    AP_GROUPINFO("AERO_IND_SCL", 13, SIM, aero_ind_scale, 1.0f),
+    // @Param: AERO_CMA_SCL
+    // @DisplayName: Aero pitch-stiffness scale
+    // @Description: Multiplies c_m_a (longitudinal static stability) at the getTorque() consumption point. 1.0 = calibrated baseline
+    // @Range: 0.25 1.75
+    AP_GROUPINFO("AERO_CMA_SCL", 14, SIM, aero_cma_scale, 1.0f),
+    // @Param: AERO_ELE_SCL
+    // @DisplayName: Elevator effectiveness scale
+    // @Description: Multiplies c_m_deltae at the getTorque() consumption point. 1.0 = calibrated baseline
+    // @Range: 0.25 2.0
+    AP_GROUPINFO("AERO_ELE_SCL", 18, SIM, aero_elev_scale, 1.0f),
+    // @Param: AERO_AIL_SCL
+    // @DisplayName: Aileron effectiveness scale
+    // @Description: Multiplies c_l_deltaa at the getTorque() consumption point. 1.0 = calibrated baseline
+    // @Range: 0.25 2.0
+    AP_GROUPINFO("AERO_AIL_SCL", 19, SIM, aero_ail_scale, 1.0f),
+    // @Param: AERO_RUD_SCL
+    // @DisplayName: Rudder effectiveness scale
+    // @Description: Multiplies c_n_deltar at the getTorque() consumption point. 1.0 = calibrated baseline
+    // @Range: 0.25 2.0
+    AP_GROUPINFO("AERO_RUD_SCL", 20, SIM, aero_rud_scale, 1.0f),
+    // @Param: AERO_CGX_OFF
+    // @DisplayName: CG longitudinal offset increment
+    // @Description: Added to CGOffset.x (aeroCenter minus CG) before the aerodynamic force cross product. Positive shifts CG aft (less static margin)
+    // @Units: m
+    // @Range: -0.3 0.3
+    AP_GROUPINFO("AERO_CGX_OFF", 7, SIM, aero_cgx_offset, 0.0f),
+    // @Param: MASS_SCL
+    // @DisplayName: Vehicle mass scale
+    // @Description: Multiplies vehicle gross mass at all consumption points (Frame body_accel and Plane accel_body). 1.0 = calibrated baseline
+    // @Range: 0.5 1.5
+    AP_GROUPINFO("MASS_SCL", 8, SIM, mass_scale, 1.0f),
+    // @Param: INERTIA_SCL
+    // @DisplayName: Vehicle inertia scale
+    // @Description: Divides all three Frame moment-of-inertia axes (values >1 mean higher inertia, slower response)
+    // @Range: 0.5 2.0
+    AP_GROUPINFO("INERTIA_SCL", 9, SIM, inertia_scale, 1.0f),
+
 
     AP_GROUPEND
 
@@ -1448,6 +1507,14 @@ const AP_Param::GroupInfo SIM::var_ins[] = {
     // @DisplayName: Simulated Clamp Channel
     // @Description: If non-zero the vehicle will be clamped in position until the value on this servo channel passes 1800PWM
     AP_GROUPINFO("CLAMP_CH",     49, SIM, clamp_ch, 0),
+
+    // @Param: MOT_FAIL
+    // @DisplayName: Motor Failure Injection Mask
+    // @Description: TEST FEATURE ONLY. Bitmask of motors whose RPM is forced to zero (physical prop-out / motor failure). bit0 = motor 1, bit1 = motor 2, etc. The mixer keeps commanding the failed motor normally, but it produces no thrust, so thrust-loss detection and control reallocation respond to a genuine failure signature. 0 = no failure
+    // @Range: 0 4095
+    // @Increment: 1
+    // @User: Advanced
+    AP_GROUPINFO("MOT_FAIL",     50, SIM, motor_fail_mask, 0),
 
     // the IMUT parameters must be last due to the enable parameters
 #if HAL_INS_TEMPERATURE_CAL_ENABLE

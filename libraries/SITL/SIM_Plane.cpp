@@ -244,7 +244,11 @@ float Plane::liftCoeff(float alpha) const
     const float alpha0 = coefficient.alpha_stall;
     const float M = coefficient.mcoeff;
     const float c_lift_0 = coefficient.c_lift_0;
-    const float c_lift_a0 = coefficient.c_lift_a;
+    // aero perturbation (SIM_AERO_CLA_SCL, docs/df200_bias_sim.md): applied at
+    // the consumption point so the -df200 init values stay the calibrated
+    // baseline. AP::sitl() is non-null in any SITL build that runs this model.
+    const SIM *_sitl = AP::sitl();
+    const float c_lift_a0 = _sitl ? coefficient.c_lift_a * _sitl->aero_cla_scale : coefficient.c_lift_a;
 
     // clamp the value of alpha to avoid exp(90) in calculation of sigmoid
     const float max_alpha_delta = 0.8f;
@@ -265,11 +269,16 @@ float Plane::dragCoeff(float alpha) const
 {
     const float b = coefficient.b;
     const float s = coefficient.s;
-    const float c_drag_p = coefficient.c_drag_p;
+    // perturbation scales (SIM_AERO_CD0_SCL / SIM_AERO_IND_SCL), see liftCoeff()
+    const SIM *_sitl = AP::sitl();
+    const float cd0_scale = _sitl ? _sitl->aero_cd0_scale : 1.0f;
+    const float ind_scale = _sitl ? _sitl->aero_ind_scale : 1.0f;
+    const float c_drag_p = coefficient.c_drag_p * cd0_scale;
     const float c_lift_0 = coefficient.c_lift_0;
     const float c_lift_a0 = coefficient.c_lift_a;
-    const float oswald = coefficient.oswald;
-    
+    // divide Oswald efficiency: ind_scale > 1 means worse induced drag
+    const float oswald = coefficient.oswald / MAX(ind_scale, 0.05f);
+
 	double AR = pow(b,2)/s;
 	double c_drag_a = c_drag_p + pow(c_lift_0+c_lift_a0*alpha,2)/(M_PI*oswald*AR);
 
@@ -301,19 +310,33 @@ Vector3f Plane::getTorque(float inputAileron, float inputElevator, float inputRu
     const float c_l_b = coefficient.c_l_b;
     const float c_l_p = coefficient.c_l_p;
     const float c_l_r = coefficient.c_l_r;
-    const float c_l_deltaa = coefficient.c_l_deltaa;
+    // aero perturbation scales (SIM_AERO_* in SITL param space,
+    // docs/df200_bias_sim.md §2). Defaults 1.0/0.0 = calibrated baseline.
+    const SIM *_sitl = AP::sitl();
+    const float ail_scale = _sitl ? _sitl->aero_ail_scale : 1.0f;
+    const float elev_scale = _sitl ? _sitl->aero_elev_scale : 1.0f;
+    const float rud_scale = _sitl ? _sitl->aero_rud_scale : 1.0f;
+    const float c_l_deltaa = coefficient.c_l_deltaa * ail_scale;
     const float c_l_deltar = coefficient.c_l_deltar;
     const float c_m_0 = coefficient.c_m_0;
     const float c_m_a = coefficient.c_m_a;
     const float c_m_q = coefficient.c_m_q;
-    const float c_m_deltae = coefficient.c_m_deltae;
+    const float c_m_deltae = coefficient.c_m_deltae * elev_scale;
     const float c_n_0 = coefficient.c_n_0;
     const float c_n_b = coefficient.c_n_b;
     const float c_n_p = coefficient.c_n_p;
     const float c_n_r = coefficient.c_n_r;
     const float c_n_deltaa = coefficient.c_n_deltaa;
-    const float c_n_deltar = coefficient.c_n_deltar;
-    const Vector3f &CGOffset = coefficient.CGOffset;
+    const float c_n_deltar = coefficient.c_n_deltar * rud_scale;
+    // CG longitudinal offset increment (SIM_AERO_CGX_OFF): + shifts CG aft.
+    // Motor positions in the Frame model are defined relative to the hover CG,
+    // so moving the aerodynamic reference point relative to CG captures the
+    // full dynamics effect of a CG shift (gravity acts through CG, motor arms
+    // unchanged). Do NOT scale motor positions - that changes frame geometry.
+    Vector3f CGOffset = coefficient.CGOffset;
+    if (_sitl) {
+        CGOffset.x += _sitl->aero_cgx_offset;
+    }
     
     float rho = air_density;
 
@@ -494,22 +517,32 @@ void Plane::calculate_forces(const struct sitl_input &input, Vector3f &rot_accel
             // guard the /airspeed terms at hover (AS~0): qbar is 0 there so
             // the terms are 0 anyway; use a safe divisor to avoid 0*inf=nan.
             const float as_safe = MAX(airspeed, 1.0f);
-            // torque term breakdown (Nm) — same formulas as getTorque()
+            // torque term breakdown (Nm) — same formulas as getTorque().
+            // Surface-effectiveness and CG scales MUST match getTorque()
+            // (SIM_AERO_* perturbation, docs/df200_bias_sim.md §2.3) or the
+            // force-budget reconciliation in df200_force_budget.py diverges.
+            const SIM *_sitl = AP::sitl();
+            const float ail_scale  = _sitl ? _sitl->aero_ail_scale : 1.0f;
+            const float elev_scale = _sitl ? _sitl->aero_elev_scale : 1.0f;
+            const float rud_scale  = _sitl ? _sitl->aero_rud_scale : 1.0f;
             const float la_b   = qbar * b * (coefficient.c_l_b * beta);
             const float la_p   = qbar * b * (coefficient.c_l_p * b * p / (2 * as_safe));
             const float la_r   = qbar * b * (coefficient.c_l_r * b * r / (2 * as_safe));
-            const float la_da  = qbar * b * (coefficient.c_l_deltaa * aileron);
+            const float la_da  = qbar * b * (coefficient.c_l_deltaa * ail_scale * aileron);
             const float la_dr  = qbar * b * (coefficient.c_l_deltar * rudder);
             const float ma_a   = qbar * c * (coefficient.c_m_a * alpha);
             const float ma_q   = qbar * c * (coefficient.c_m_q * c * q / (2 * as_safe));
-            const float ma_de  = qbar * c * (coefficient.c_m_deltae * elevator);
+            const float ma_de  = qbar * c * (coefficient.c_m_deltae * elev_scale * elevator);
             const float ma_0   = qbar * c * coefficient.c_m_0;
             const float na_b   = qbar * b * (coefficient.c_n_b * beta);
             const float na_p   = qbar * b * (coefficient.c_n_p * b * p / (2 * as_safe));
             const float na_r   = qbar * b * (coefficient.c_n_r * b * r / (2 * as_safe));
             const float na_da  = qbar * b * (coefficient.c_n_deltaa * aileron);
-            const float na_dr  = qbar * b * (coefficient.c_n_deltar * rudder);
-            const Vector3f &cg = coefficient.CGOffset;
+            const float na_dr  = qbar * b * (coefficient.c_n_deltar * rud_scale * rudder);
+            Vector3f cg = coefficient.CGOffset;
+            if (_sitl) {
+                cg.x += _sitl->aero_cgx_offset;
+            }
             const float la_cg = cg.y * force.z - cg.z * force.y;
             const float ma_cg = -cg.x * force.z + cg.z * force.x;
             const float na_cg = -cg.y * force.x + cg.x * force.y;
@@ -578,8 +611,13 @@ void Plane::calculate_forces(const struct sitl_input &input, Vector3f &rot_accel
     // scale thrust to newtons
     thrust *= thrust_scale;
 
+    // mass perturbation (SIM_MASS_SCL, docs/df200_bias_sim.md §2.5): must be
+    // applied here AND at Frame::calculate_forces gross_mass() division, or
+    // the two parts of a quadplane get inconsistent effective gravity.
+    const SIM *_sitl = AP::sitl();
+    const float mass_eff = _sitl ? mass * _sitl->mass_scale : mass;
     accel_body = Vector3f(thrust, 0, 0) + force;
-    accel_body /= mass;
+    accel_body /= mass_eff;
 
     // add some noise
     if (thrust_scale > 0) {
