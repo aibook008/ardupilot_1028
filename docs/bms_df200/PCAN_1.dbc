@@ -1,0 +1,173 @@
+VERSION ""
+
+
+NS_ : 
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: BMS HCU BMU
+
+
+BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
+ SG_ BMS_HEAT_CONT : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_NEG_RLY_CONT : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ BMS_LowVolt_Volt : 0|16@1+ (0.01,1) [15|25.2] "" Vector__XXX
+ SG_ BMS_LowTemp_Volt : 0|16@1+ (0.01,1) [15|25.2] "" Vector__XXX
+ SG_ BMS_CELL_MIN_TEMPNum : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_CELL_MAX_TEMPNum : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_BATT_MIN_TEMP : 0|16@1- (0.1,-20) [-20|100] "" Vector__XXX
+ SG_ BMS_ISO_STA : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_HEAT_STA : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_ErrCode : 0|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_CELL_MIN_VOLNum : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_CELL_MAX_VOLNum : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_BATT_SOH : 0|8@1+ (1,0) [0|100] "" Vector__XXX
+ SG_ BMS_BATT_SOC : 0|8@1+ (1,0) [0|100] "" Vector__XXX
+ SG_ BMS_CELL_MAX_VOL : 0|8@1+ (0.1,0) [2.5|4.25] "" Vector__XXX
+ SG_ BMS_BATT_VOLT : 0|16@1+ (0.1,0) [340|490] "" Vector__XXX
+ SG_ BMS_BATT_MAX_TEMP : 0|16@1- (0.1,-20) [-20|100] "" Vector__XXX
+ SG_ BMS_BATT_CURR : 0|16@1- (0.1,0) [-1000|1000] "" Vector__XXX
+ SG_ BMS_LowVolt_Volt : 0|16@1+ (0.01,1) [15|25.2] "" Vector__XXX
+ SG_ HCU_HEAT_CONT : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HCU_NEG_RLY_CONT : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ BMS_CELL_MAX_TMP : 0|16@1+ (0.1,0) [-20|100] "" Vector__XXX
+ SG_ BMS_FaultCode : 0|8@0+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_InsolationState : 0|4@1+ (1,0) [-40|210] "" Vector__XXX
+ SG_ BMS_PosInsoFaultLevel : 0|2@1+ (1,0) [-40|210] "" Vector__XXX
+ SG_ BMS_NegInsoFaultLevel : 0|2@1+ (1,0) [-40|210] "" Vector__XXX
+ SG_ Bms_PosInsolation : 0|16@1+ (1,0) [0|65535] "kΩ" Vector__XXX
+ SG_ Bms_NegInsolation : 0|16@1+ (1,0) [0|65535] "kΩ" Vector__XXX
+ SG_ BMS_Life7 : 0|8@1+ (1,0) [-40|210] "" Vector__XXX
+
+BO_ 2566868996 BMS_1_04: 8 BMU
+ SG_ BMS_HEAT_CONT : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_NEG_RLY_CONT : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 2566903283 _0x18FFD5F3: 8 Vector__XXX
+ SG_ BMS_FaultCode : 47|8@0+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_InsolationState : 0|4@1+ (1,0) [-40|210] "" Vector__XXX
+ SG_ BMS_PosInsoFaultLevel : 4|2@1+ (1,0) [-40|210] "" Vector__XXX
+ SG_ BMS_NegInsoFaultLevel : 6|2@1+ (1,0) [-40|210] "" Vector__XXX
+ SG_ Bms_PosInsolation : 8|16@1+ (1,0) [0|65535] "kΩ" Vector__XXX
+ SG_ Bms_NegInsolation : 24|16@1+ (1,0) [0|65535] "kΩ" Vector__XXX
+ SG_ BMS_Life7 : 56|8@1+ (1,0) [-40|210] "" Vector__XXX
+
+BO_ 2566868997 BMS_1_05: 8 Vector__XXX
+ SG_ BMS_CELL_MIN_VOL : 40|16@1+ (0.001,0) [0|65.535] "" Vector__XXX
+ SG_ BMS_SysMode : 32|8@1+ (1,1) [0|255] "" Vector__XXX
+ SG_ BMS_CELL_MIN_TEMPNum : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_CELL_MAX_TEMPNum : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_BATT_MIN_TEMP : 8|16@1- (0.1,-20) [-20|100] "" Vector__XXX
+
+BO_ 2566868994 BMS_1_02: 8 Vector__XXX
+ SG_ BMS_ISO_STA : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_HEAT_STA : 16|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_ErrCode : 32|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_CELL_MIN_VOLNum : 56|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_CELL_MAX_VOLNum : 48|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BMS_BATT_SOH : 8|8@1+ (1,0) [0|100] "" Vector__XXX
+ SG_ BMS_BATT_SOC : 0|8@1+ (1,0) [0|100] "" Vector__XXX
+
+BO_ 2566868993 BMS_1_01: 8 BMS
+ SG_ BMS_BATT_MAX_TEMP : 32|16@1- (0.1,-20) [-20|100] "" Vector__XXX
+ SG_ BMS_CELL_MAX_VOL : 48|16@1+ (0.001,0) [0|65.535] "" Vector__XXX
+ SG_ BMS_BATT_VOLT : 0|16@1+ (0.1,0) [340|490] "" Vector__XXX
+ SG_ BMS_BATT_CURR : 16|16@1- (0.1,0) [-1000|1000] "" Vector__XXX
+
+BO_ 2566868995 HCU_1: 8 HCU
+ SG_ HCU_OPEN_Load_CONT : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HCU_NEG_RLY_CONT : 8|8@1+ (1,0) [0|255] ""  BMS
+
+
+
+CM_ BO_ 3221225472 "This is a message for not used signals, created by Vector CANdb++ DBC OLE DB Provider.";
+BA_DEF_  "DBName" STRING ;
+BA_DEF_  "BusType" STRING ;
+BA_DEF_  "ProtocolType" STRING ;
+BA_DEF_ BO_  "VFrameFormat" ENUM  "StandardCAN","ExtendedCAN","reserved","J1939PG","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";
+BA_DEF_ BO_  "GenMsgSendType" ENUM  "Cyclic","Event","CyclicIfActive","SpontanWithDelay","CyclicAndSpontan","CyclicAndSpontanWithDelay";
+BA_DEF_ BO_  "GenMsgCycleTime" INT 0 0;
+BA_DEF_ BO_  "GenMsgDelayTime" INT 0 0;
+BA_DEF_ SG_  "GenSigStartValue" FLOAT 0 0;
+BA_DEF_ BU_  "NmStationAddress" INT 0 255;
+BA_DEF_ BU_  "NmJ1939AAC" INT 0 1;
+BA_DEF_ BU_  "NmJ1939IndustryGroup" INT 0 7;
+BA_DEF_ BU_  "NmJ1939System" INT 0 127;
+BA_DEF_ BU_  "NmJ1939SystemInstance" INT 0 15;
+BA_DEF_ BU_  "NmJ1939Function" INT 0 255;
+BA_DEF_ BU_  "NmJ1939FunctionInstance" INT 0 31;
+BA_DEF_ BU_  "NmJ1939ECUInstance" INT 0 7;
+BA_DEF_ BU_  "NmJ1939ManufacturerCode" INT 0 2047;
+BA_DEF_ BU_  "NmJ1939IdentityNumber" INT 0 2097151;
+BA_DEF_DEF_  "DBName" "Cluster";
+BA_DEF_DEF_  "BusType" "CAN";
+BA_DEF_DEF_  "ProtocolType" "J1939";
+BA_DEF_DEF_  "VFrameFormat" "StandardCAN";
+BA_DEF_DEF_  "GenMsgSendType" "Cyclic";
+BA_DEF_DEF_  "GenMsgCycleTime" 0;
+BA_DEF_DEF_  "GenMsgDelayTime" 0;
+BA_DEF_DEF_  "GenSigStartValue" 0;
+BA_DEF_DEF_  "NmStationAddress" 254;
+BA_DEF_DEF_  "NmJ1939AAC" 0;
+BA_DEF_DEF_  "NmJ1939IndustryGroup" 0;
+BA_DEF_DEF_  "NmJ1939System" 0;
+BA_DEF_DEF_  "NmJ1939SystemInstance" 0;
+BA_DEF_DEF_  "NmJ1939Function" 0;
+BA_DEF_DEF_  "NmJ1939FunctionInstance" 0;
+BA_DEF_DEF_  "NmJ1939ECUInstance" 0;
+BA_DEF_DEF_  "NmJ1939ManufacturerCode" 0;
+BA_DEF_DEF_  "NmJ1939IdentityNumber" 0;
+BA_ "DBName" "Cluster";
+BA_ "GenMsgCycleTime" BO_ 2566868996 100;
+BA_ "GenMsgSendType" BO_ 2566868996 0;
+BA_ "VFrameFormat" BO_ 2566868996 1;
+BA_ "VFrameFormat" BO_ 2566903283 1;
+BA_ "GenMsgCycleTime" BO_ 2566868997 200;
+BA_ "GenMsgSendType" BO_ 2566868997 0;
+BA_ "VFrameFormat" BO_ 2566868997 1;
+BA_ "GenMsgCycleTime" BO_ 2566868994 200;
+BA_ "GenMsgSendType" BO_ 2566868994 0;
+BA_ "VFrameFormat" BO_ 2566868994 1;
+BA_ "GenMsgCycleTime" BO_ 2566868993 200;
+BA_ "GenMsgSendType" BO_ 2566868993 0;
+BA_ "VFrameFormat" BO_ 2566868993 1;
+BA_ "GenMsgCycleTime" BO_ 2566868995 100;
+BA_ "GenMsgSendType" BO_ 2566868995 0;
+BA_ "VFrameFormat" BO_ 2566868995 1;
+BA_ "GenSigStartValue" SG_ 3221225472 BMS_LowVolt_Volt -100;
+BA_ "GenSigStartValue" SG_ 3221225472 BMS_LowTemp_Volt -100;
+BA_ "GenSigStartValue" SG_ 3221225472 BMS_BATT_MIN_TEMP 200;
+BA_ "GenSigStartValue" SG_ 3221225472 BMS_BATT_MAX_TEMP 200;
+BA_ "GenSigStartValue" SG_ 3221225472 BMS_LowVolt_Volt -100;
+BA_ "GenSigStartValue" SG_ 2566868997 BMS_SysMode -1;
+BA_ "GenSigStartValue" SG_ 2566868997 BMS_BATT_MIN_TEMP 200;
+BA_ "GenSigStartValue" SG_ 2566868993 BMS_BATT_MAX_TEMP 200;
+
