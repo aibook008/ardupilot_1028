@@ -83,15 +83,26 @@ LOCK_LOCK    = 0x55   # 锁刹车
 LOCK_UNLOCK  = 0xAA   # 解锁刹车
 ```
 
-### 1.4 编译产物与 signature（飞控侧已实测）
+### 1.4 编译产物与 signature（2026-09-22 已按厂商 V1.0 文档对齐）
 
 | 项 | Command | Feedback |
 |---|---|---|
 | DTID | 2025 | 2026 |
-| signature | `0x23B8062531071311` | `0x37C09D0F031097C9` |
+| signature | `0x389765D2EAC0E400` | `0x3A8120AAB9EF661A` |
 | MAX_SIZE | 12 B | 25 B |
 
-**signature 由「消息全名 + 字段结构」自动计算**。任何一方改了字段（哪怕是加注释外的实际字段），signature 就变 → 对方收帧 CRC 校验失败 → **整条消息静默丢弃，不报错**。所以：**字段改动必须双方同步，改完各自跑 dsdlc 比对 signature 一致才算对齐**（自检方法见 §6）。
+**signature 采用 `OVERRIDE_SIGNATURE` 写死为厂商文档（HM-XY-CAN-24001，UAVCAN通讯协议V1.0_倾转舵机控制器）给出的值**（Command 见其 §3.4，Feedback 见其 §2.3），与 Himark `2018.ServoCmd`/`2019.ServoInfo` 同款做法。两个 `.uavcan` 文件已加入：
+
+```python
+# 2025.TiltServoCommand.uavcan
+OVERRIDE_SIGNATURE 0x389765D2EAC0E400
+# 2026.TiltServoFeedback.uavcan
+OVERRIDE_SIGNATURE 0x3A8120AAB9EF661A
+```
+
+> ⚠ 历史注记：2026-09-18 首版方案里 dsdlc 自动计算的 signature 曾为 `0x23B8062531071311` / `0x37C09D0F031097C9`，与厂商文档不一致——**signature 直接参与 transfer CRC 计算（见 §2.3），两边签名不同则对方收帧 CRC 全错、整条消息静默丢弃**。现已改为 OVERRIDE 对齐厂商值；dsdlc 重编译产物三件套已核对一致（2025/0x3897.../12 与 2026/0x3A81.../25）。
+>
+> 厂商签名与其 docx 算例的 CRC 验算见 §2.3.1：厂商修正版 25 字节反馈算例实算 `0x5191` 与其期望值精确一致，**算法与签名已双向闭环**。
 
 ### 1.5 序列化规则（双方实现必须一致）
 
@@ -116,31 +127,102 @@ LOCK_UNLOCK  = 0xAA   # 解锁刹车
 多帧规则（UAVCAN v0 标准）：
 
 ```text
-首帧: [CRC低字节][CRC高字节][数据...][tail byte]   tail: START=1, END=0, TOGGLE=1
+首帧: [CRC低字节][CRC高字节][数据...][tail byte]   tail: START=1, END=0, TOGGLE=0
 中间: [数据...][tail byte]                        tail: START=0, END=0, TOGGLE交替
 末帧: [数据...][tail byte]                        tail: START=0, END=1, TOGGLE交替
 
 transfer CRC = CRC16/X.25(初始0xFFFF)，先把 signature 的 8 字节（小端）参与计算，
-再算全部 payload 字节。
+再算全部 payload 字节。逐步验算过程见 §2.3。
+
+与厂商 docx §2.2/§3.2 帧尾配置 (S,E,T)=(1,0,0)→(0,0,1)→…→(0,1,1) 逐位一致；
+libcanard 发送 toggle 从 0 起步（canard.c:1206）。
 ```
 
 **舵机固件必须**：
 1. 按上面规则重组多帧（toggle 交替校验、transfer ID 跳变丢弃、CRC 含 signature）；
 2. Command 断流保护：**建议 ≥200ms 收不到完整 Command transfer 即进入安全位**（回垂直或保持现位+锁刹车，具体行为见 §4 待确认项）。
 
-> **为什么必然是多帧、没有"砍成单帧"的选项**：单帧净荷上限 7 字节，而 DF-200 是 4 路倾转，仅 4×int16 pos_cmd 就已 8 字节，加上 4×lock 共 12 字节。4 通道是构型需求（内四倾转、差动后 4 路独立角度），不可裁剪。Feedback 25 字节同样绕不开多帧——**舵机侧的多帧收发能力是本协议的硬性前置条件**。
-
 ### 2.2 运行参数（双方各自配置，需对齐的打 ★）
 
 | 参数 | 值 | 说明 |
 |---|---|---|
 | ★ 波特率 | **1 Mbps**（1000000） | 全网所有节点必须一致，否则物理层不通 |
-| ★ priority | 飞控发 Command 用 **8（HIGH）**；舵机发 Feedback 建议 16~24（中低即可） | priority 在 CAN ID 高 5 位，随帧走，接收方不需要配置 |
+| ★ priority | 飞控发 Command 用 **8（HIGH）**；舵机发 Feedback 建议 16~24（中低即可） | priority 在 CAN ID 高 5 位，随帧走，接收方不需要配置。⚠ 厂商 docx 写死 0x14=20（其示例 CAN ID 0x1407E901/0x1407EA64）——priority 只影响总线仲裁不影响收发，飞控侧用 8 亦可，但联调抓包过滤时注意两边不一致 |
 | ★ 飞控 NodeID | **10**（默认，可用参数改） | |
 | ★ 舵机 NodeID | **建议 100 起，每台 +1** | 全网唯一即可，1~125 |
 | 发送周期（Command） | **默认 50 Hz**，飞控参数可调（20~200 Hz） | 请告知舵机侧最低可接受的命令刷新率 |
 | 发送周期（Feedback） | **待定**：建议 10~50 Hz（见 §4 表） | 舵机侧配置 |
 | DTID | Command=2025，Feedback=2026，固定不可改 | 写在 `.uavcan` 文件名前缀里 |
+
+### 2.3 transfer CRC 计算过程（逐步验算，2026-09-22 实测，算法已闭环）
+
+CRC 函数与厂商文档 §1.2 所贴源码逐字符一致，即 libcanard 实现（`modules/DroneCAN/libcanard/canard.c`）：
+
+```text
+crcAddByte(crc, byte):   crc ^= (byte << 8)；循环 8 次：
+                           b15=1 → crc = (crc << 1) ^ 0x1021；b15=0 → crc <<= 1（16 位截断）
+crcAddSignature(crc, sig): 签名 64 位按 LSB-first 拆 8 字节（sig >> 0/8/.../56 & 0xFF），逐字节走 crcAddByte
+crcAdd(crc, buf, len):    业务数据原序逐字节走 crcAddByte
+```
+
+参数：poly `0x1021`、init `0xFFFF`、不反射、无输出异或（CRC-16/CCITT-FALSE 位序方向，UAVCAN v0 标准）。**CRC 只覆盖 signature 8 字节 + 全部 payload 字节，不含 CRC 自身与 tail byte**（与厂商文档 §2.3/§3.4 口径一致）。发送时低字节在前（canard.c:1238-1239）。
+
+### 2.3.1 算法闭环验证（厂商修正版反馈算例，25 字节）
+
+厂商提供完整 25 字节反馈算例（pos=10/20/30/40mm，27.4V，电流 0.5/0.6/0.7/0.8A，status 全 0x08，fault 全 0）：
+
+```text
+buffer[25] = { 0xE8,0x03,0xD0,0x07,0xB8,0x0B,0xA0,0x0F,
+               0x89,0x32,0x00,0x3C,0x00,0x46,0x00,0x50,
+               0x00,0x08,0x08,0x08,0x08,0x00,0x00,0x00,0x00 }
+signature = 0x3A8120AAB9EF661A
+期望 CRC  = 0x5191（厂商文档给出）
+```
+
+签名按 LSB-first 拆字节：`1A 66 EF B9 AA 20 81 3A`。逐字节中间值（可手算复核）：
+
+| 输入 | 字节 | CRC | | 输入 | 字节 | CRC |
+|------|------|------|---|------|------|------|
+| init | — | `FFFF` | | buf[9] | 32 | `0744` |
+| sig[0] | 1A | `528B` | | buf[10] | 00 | `34E7` |
+| sig[1] | 66 | `FDD7` | | buf[11] | 3C | `6608` |
+| sig[2] | EF | `E573` | | buf[12] | 00 | `0460` |
+| sig[3] | B9 | `E879` | | buf[13] | 46 | `0886` |
+| sig[4] | AA | `1186` | | buf[14] | 00 | `0708` |
+| sig[5] | 20 | `A072` | | buf[15] | 50 | `2212` |
+| sig[6] | 81 | `4643` | | buf[16] | 00 | `0708` |
+| sig[7] | 3A | `FC1B` ←签名毕 | | buf[17] | 08 | `9728` |
+| buf[0] | E8 | `49B5` | | buf[18] | 08 | `5A56` |
+| buf[1] | 03 | `5C8E` | | buf[19] | 08 | `2CB7` |
+| buf[2] | D0 | `DE04` | | buf[20] | 00 | `1D1E` |
+| buf[3] | 07 | `5E54` | | buf[21] | 00 | `DD9C` |
+| buf[4] | B8 | `C9E8` | | buf[22] | 00 | `86D0` |
+| buf[5] | 0B | `110E` | | buf[23] | 00 | `214E` |
+| buf[6] | A0 | `B9FA` | | buf[24] | 00 | **`5191`** |
+| buf[7] | 0F | `3D1D` | | | | |
+| buf[8] | 89 | `FA5F` | | | | |
+
+```text
+实算 crc = 0x5191 = 厂商期望值  → 算法与签名完全对齐，CRC 机制闭环 ✅
+上线时首帧前两字节 = 91 51（低字节在前）
+```
+
+**旁证**（同一实现）：CRC-16/CCITT-FALSE 标准检验值 `"123456789" → 0x29B1` 精确命中；旧 Himark ServoInfo 真实抓包算例（`docs/himarkservo.md`）算得 `0xA0A8`，与抓包一致。
+
+> 历史注记：厂商 2026-09-22 早期版 docx 的 §3.4 命令算例（12B，期望 0x2E4D）与实算 0x99B5 不符，系该算例 buffer 数据本身有误（非算法分歧，穷举 40+ CRC 变体均无法复现），厂商后续已修正，以本节 25B 闭环算例为准。
+
+### 2.3.2 联调对拍方法
+
+抓一帧真实 Feedback（或 Command）transfer，取首帧前 2 字节与脚本输出比对：
+
+```bash
+python3 docs/scripts/himark_servo_crc.py --type tilt_fb    # 反馈预设（含字段解码）
+python3 docs/scripts/himark_servo_crc.py --type tilt_cmd   # 命令预设
+python3 docs/scripts/himark_servo_crc.py --type tilt_fb --build --tid 3 --node 100
+                                                           # --build 拆出每条 CAN 帧（含 CRC 与 tail byte）
+```
+
+脚本 `docs/scripts/himark_servo_crc.py` 内置全部算例与字段解码，CRC 实现与 libcanard 逐行同构。
 
 ---
 
@@ -224,8 +306,8 @@ DSDL 里 status/fault 只定义了"uint8 位域，应用层解析"，**bit 含�
     飞控侧: python3 modules/DroneCAN/dronecan_dsdlc/dronecan_dsdlc.py -O /tmp/out \
               modules/DroneCAN/DSDL/tilt_uavcan
     grep -E "ID|SIGNATURE|MAX_SIZE" /tmp/out/include/tilt_uavcan.*.h
-  期望完全一致：2025/0x23B8062531071311/12 与 2026/0x37C09D0F031097C9/25
-  不一致 → 字段定义有分歧，回到 §1 逐字段核对（这是唯一裁决源）
+  期望完全一致：2025/0x389765D2EAC0E400/12 与 2026/0x3A8120AAB9EF661A/25（OVERRIDE，厂商 V1.0 文档值）
+  不一致 → 字段定义或 OVERRIDE_SIGNATURE 有分歧，回到 §1 逐字段核对（这是唯一裁决源）
 
 第 2 步  飞控发 / 舵机收（实机）
   飞控接 4 台舵机+CAN 分析仪，上电解锁后验证：
@@ -278,3 +360,5 @@ DSDL 里 status/fault 只定义了"uint8 位域，应用层解析"，**bit 含�
 | `docs/dsdl_custom_guide.md` | signature 机制详解（飞控内部） |
 | `docs/uav_can.md` | CAN ID 布局/五层过滤/总线负载（飞控内部） |
 | `docs/df200-uavcan.md` | LSB-first 打包演示与验证脚本（飞控内部） |
+| `docs/scripts/himark_servo_crc.py` | transfer CRC 计算脚本（§2.3 验算，含 tilt_cmd/tilt_fb 预设与多帧拆包） |
+| `docs/UAVCAN通讯协议V1.0_倾转舵机控制器.docx` | 厂商协议文档（HM-XY-CAN-24001） |
