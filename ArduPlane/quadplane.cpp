@@ -1814,6 +1814,9 @@ void QuadPlane::update(void)
         SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, fwd_thr);
     }
 
+    // check for VTOL motor thrust loss and enable motors thrust boost
+    thrust_loss_check();
+
 #if HAL_LOGGING_ENABLED
     // motors logging
     if (motors->armed()) {
@@ -2579,15 +2582,14 @@ void QuadPlane::vtol_position_controller(void)
         // use nav controller roll
         plane.calc_nav_roll();
 
-        // work out the point to enter airbrake mode. Fixed 4 km entry
-        // (user-tuned): AIRBRAKE has the whole 4 km to idle-brake from
-        // cruise speed to the handover speed, POSITION1 finishes the
-        // job, and any remaining distance is closed as a multicopter.
-        // The two-phase model is kept only as a floor so that a slow
-        // entry (headwind, low cruise speed) never enters too late to
-        // stop. Tuning knob until this becomes a proper parameter.
-        const float stop_distance = MAX(4000.0f,
-                                        stopping_distance_2phase(groundspeed) + 2*closing_speed);
+        // work out the point to enter airbrake mode. Pre-06f5093 behavior
+        // restored (working-tree edit, no history change): pure two-phase
+        // stopping distance, NO fixed 4km floor. The 4000m floor forced the
+        // reverse chain to engage at mission start on short (<4km) sorties -
+        // reverse tilt began too early and the aircraft could not reach the
+        // endpoint (2.8km A-B test). With the pure planner the entry point
+        // scales with speed: ~1.5km at 55 m/s cruise.
+        const float stop_distance = stopping_distance_2phase(groundspeed) + 2*closing_speed;
 
         if (!suppress_z_controller && poscontrol.get_state() == QPOS_AIRBRAKE) {
             hold_hover(0);
