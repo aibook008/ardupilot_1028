@@ -124,6 +124,7 @@ public:
     bool in_vtol_takeoff(void) const;
     bool in_vtol_posvel_mode(void) const;
     void update_throttle_hover();
+    void thrust_loss_check(void);
     bool show_vtol_view() const;
 
     // vtol help for is_flying()
@@ -462,6 +463,11 @@ private:
 
     // true when quad is assisting a fixed wing mode
     bool assisted_flight;
+
+    // thrust loss detection state
+    AP_Int8 tloss_enable;
+    uint16_t thrust_loss_counter;
+    uint32_t thrust_loss_last_check_ms;
 
     // are we in a guided takeoff?
     bool guided_takeoff;

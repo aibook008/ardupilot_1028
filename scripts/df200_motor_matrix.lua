@@ -69,6 +69,7 @@ local SCALE_EPS = 0.05
 local last_roll = -1.0
 local last_pitch = -1.0
 local last_yaw = -1.0
+local last_fail_mask = 0
 local inited = false
 
 local function lerp_scale(as, floor)
@@ -86,13 +87,32 @@ local function lerp_scale(as, floor)
 end
 
 local function apply_factors(roll_s, pitch_s, yaw_s)
+    -- motor failure injection: SCR_USER1=1 zeroes the motors selected by
+    -- MOT_STOP_BITMASK (added by motor_failure_test_param.lua, KEY 75).
+    -- Zeroed factors make the mixer treat those motors as failed, so
+    -- check_for_failed_motor detects the imbalance and thrust boost
+    -- reallocation acts on the real allocation path.
+    local fail_mask = 0
+    if param:get("SCR_USER1") == 1 then
+        local m = param:get("MOT_STOP_BITMASK")
+        if m then
+            fail_mask = m
+        end
+    end
     local factors = motor_factor_table()
     for i = 0, 7 do
         local b = BASE[i + 1]
-        factors:roll(i, b[1] * roll_s)
-        factors:pitch(i, b[2] * pitch_s)
-        factors:yaw(i, b[3] * yaw_s)
-        factors:throttle(i, 1.0)
+        if (fail_mask & (1 << i)) ~= 0 then
+            factors:roll(i, 0)
+            factors:pitch(i, 0)
+            factors:yaw(i, 0)
+            factors:throttle(i, 0)
+        else
+            factors:roll(i, b[1] * roll_s)
+            factors:pitch(i, b[2] * pitch_s)
+            factors:yaw(i, b[3] * yaw_s)
+            factors:throttle(i, 1.0)
+        end
     end
     Motors_dynamic:load_factors(factors)
 end
@@ -121,6 +141,23 @@ end
 local function update()
     if not ensure_init() then
         return update, UPDATE_MS
+    end
+
+    -- track failure mask (SCR_USER1=1 injects per MOT_STOP_BITMASK);
+    -- reload factors whenever it changes so injection is immediate
+    local fail_mask = 0
+    if param:get("SCR_USER1") == 1 then
+        local m = param:get("MOT_STOP_BITMASK")
+        if m then
+            fail_mask = m
+        end
+    end
+    if fail_mask ~= last_fail_mask then
+        gcs:send_text(MAV_SEVERITY_INFO,
+            string.format("DF-200 fail mask 0x%X -> 0x%X", last_fail_mask, fail_mask))
+        last_fail_mask = fail_mask
+        -- force reload this cycle (drop below threshold comparison)
+        last_roll, last_pitch, last_yaw = -1, -1, -1
     end
 
     local as = ahrs:airspeed_estimate()

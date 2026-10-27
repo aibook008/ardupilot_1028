@@ -574,6 +574,13 @@ const AP_Param::GroupInfo QuadPlane::var_info2[] = {
     // @User: Advanced
     AP_GROUPINFO("TF_YAW_TMO", 41, QuadPlane, takeoff_yaw_tmo_s, 0),
 
+    // @Param: TLOSS_ENABLE
+    // @DisplayName: Thrust loss check enable
+    // @Description: Enables detection of VTOL motor thrust loss. When thrust loss is detected (level attitude target, saturated throttle, descending, with attitude control, for 1 second) motors thrust boost is enabled so the motors matrix reallocates output to the remaining motors. The motors library disables boost itself when it is no longer needed
+    // @Values: 0:Disabled,1:Enabled
+    // @User: Advanced
+    AP_GROUPINFO("TLOSS_ENABLE", 42, QuadPlane, tloss_enable, 1),
+
     AP_GROUPEND
 };
 
@@ -1962,6 +1969,96 @@ void QuadPlane::update_throttle_hover()
 /*
   output motors and do any copter needed
  */
+/*
+  thrust loss check - detects loss of thrust from a VTOL motor and enables
+  thrust boost in the motors matrix so output is reallocated to the
+  remaining motors. Ported from Copter::thrust_loss_check().
+  Runs only in pure VTOL flight (not assisted/transition) to avoid false
+  triggers during fixed-wing flight. Called from update() at 10Hz.
+*/
+#define THRUST_LOSS_CHECK_TRIGGER_SEC         1.0f  // 1 second descent while level and high throttle indicates thrust loss
+#define THRUST_LOSS_CHECK_ANGLE_DEVIATION_CD  1500  // we can't expect to maintain altitude beyond 15 degrees on all aircraft
+#define THRUST_LOSS_CHECK_MINIMUM_THROTTLE    0.9f  // we can expect to maintain altitude above 90% throttle
+#define THRUST_LOSS_CHECK_ANGLE_ERROR_DEG     30.0f // 30 degrees angle error means we do not have attitude control
+#define THRUST_LOSS_CHECK_RATE_HZ             10    // check rate in Hz, must match call rate from update()
+
+void QuadPlane::thrust_loss_check(void)
+{
+    // no-op if disabled by parameter
+    if (tloss_enable <= 0) {
+        return;
+    }
+
+    // exit immediately if thrust boost is already engaged
+    // (the motors library disables it itself when no longer needed)
+    if (motors->get_thrust_boost()) {
+        return;
+    }
+
+    // return immediately if disarmed or not in pure VTOL flight.
+    // during assisted flight / transition a descent with high throttle is
+    // normal and must not trigger the check
+    if (!hal.util->get_soft_armed() || !in_vtol_mode() || assisted_flight) {
+        thrust_loss_counter = 0;
+        return;
+    }
+
+    // 10Hz rate limit (update() runs at main loop rate)
+    const uint32_t now_ms = AP_HAL::millis();
+    if (now_ms - thrust_loss_last_check_ms < uint32_t(1000 / THRUST_LOSS_CHECK_RATE_HZ)) {
+        return;
+    }
+    thrust_loss_last_check_ms = now_ms;
+
+    // check for desired angle over 15 degrees
+    const Vector3f angle_target = attitude_control->get_att_target_euler_cd();
+    if (sq(angle_target.x) + sq(angle_target.y) > sq(THRUST_LOSS_CHECK_ANGLE_DEVIATION_CD)) {
+        thrust_loss_counter = 0;
+        return;
+    }
+
+    // check for throttle over 90% or throttle saturation
+    if ((attitude_control->get_throttle_in() < THRUST_LOSS_CHECK_MINIMUM_THROTTLE) && (!motors->limit.throttle_upper)) {
+        thrust_loss_counter = 0;
+        return;
+    }
+
+    // check throttle is over 25% to prevent checks triggering from thrust
+    // limitations caused by low commanded throttle
+    if (attitude_control->get_throttle_in() < 0.25f) {
+        thrust_loss_counter = 0;
+        return;
+    }
+
+    // check for descent
+    if (!is_negative(inertial_nav.get_velocity_z_up_cms())) {
+        thrust_loss_counter = 0;
+        return;
+    }
+
+    // check for angle error over 30 degrees to ensure the aircraft has attitude control
+    const float angle_error = attitude_control->get_att_error_angle_deg();
+    if (angle_error >= THRUST_LOSS_CHECK_ANGLE_ERROR_DEG) {
+        thrust_loss_counter = 0;
+        return;
+    }
+
+    // the aircraft is descending with low requested roll and pitch, at full
+    // available throttle, with attitude control: we may have lost thrust
+    thrust_loss_counter++;
+
+    // check if thrust loss for 1 second
+    if (thrust_loss_counter >= uint16_t(THRUST_LOSS_CHECK_TRIGGER_SEC * THRUST_LOSS_CHECK_RATE_HZ)) {
+        thrust_loss_counter = 0;
+        LOGGER_WRITE_ERROR(LogErrorSubsystem::THRUST_LOSS_CHECK, LogErrorCode::FAILSAFE_OCCURRED);
+        // send message to gcs
+        gcs().send_text(MAV_SEVERITY_EMERGENCY, "Potential Thrust Loss (%d)", (int)motors->get_lost_motor() + 1);
+        // enable thrust loss handling; the motors library disables this
+        // when it is no longer needed to achieve the commanded output
+        motors->set_thrust_boost(true);
+    }
+}
+
 void QuadPlane::motors_output(bool run_rate_controller)
 {
     /* Delay for ARMING_DELAY_MS after arming before allowing props to spin:

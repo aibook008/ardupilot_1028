@@ -231,6 +231,14 @@ const AP_Param::GroupInfo AP_MotorsMulticopter::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("SPOOL_TIM_DN", 44, AP_MotorsMulticopter, _spool_down_time, 0),
 
+    // @Param: LOST_MOTOR
+    // @DisplayName: Test motor loss injection
+    // @Description: TEST FEATURE ONLY. Directly declares a motor as failed (1-based index, 0 = none) for validating thrust-boost control reallocation without relying on the automatic thrust-loss detection (which requires near-saturated thrust and will not trigger with large redundancy margins). When non-zero: the motor matrix treats this motor as the lost motor, thrust boost is held continuously (auto-disable bypassed), and the mixer reallocates output to the remaining motors. The declared motor keeps its normal mixer command so the reallocated throttle of all motors is observable in the MOTT log. Set to 0 to restore normal behaviour.
+    // @Range: 0 12
+    // @Increment: 1
+    // @User: Advanced
+    AP_GROUPINFO("LOST_MOTOR", 45, AP_MotorsMulticopter, _lost_motor_test, 0),
+
     AP_GROUPEND
 };
 

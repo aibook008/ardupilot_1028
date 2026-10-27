@@ -478,6 +478,16 @@ void AP_MotorsMatrix::output_armed_stabilizing()
 //   sets _motor_lost_index to index of failed motor
 void AP_MotorsMatrix::check_for_failed_motor(float throttle_thrust_best_plus_adj)
 {
+    // test-only motor loss injection (MOT_LOST_MOTOR): directly declare the lost
+    // motor and hold thrust boost on, bypassing automatic detection (which needs
+    // near-saturated thrust and cannot trigger with large redundancy margins)
+    const int8_t test_lost = _lost_motor_test;
+    if (test_lost > 0 && test_lost <= AP_MOTORS_MAX_NUM_MOTORS && motor_enabled[test_lost - 1]) {
+        _motor_lost_index = test_lost - 1;
+        _thrust_boost = true;
+        return;
+    }
+
     // record filtered and scaled thrust output for motor loss monitoring purposes
     float alpha = _dt / (_dt + 0.5f);
     for (uint8_t i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {

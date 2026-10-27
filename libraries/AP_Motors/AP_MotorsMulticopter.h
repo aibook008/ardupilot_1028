@@ -176,6 +176,10 @@ protected:
     AP_Float            _spool_up_time;
     AP_Float            _spool_down_time;
 
+    // test-only motor loss injection: 1-based motor number declared failed, 0 = none.
+    // Holds thrust boost on and pins _motor_lost_index for reallocation validation
+    AP_Int8             _lost_motor_test;
+
     // scaling for booster motor throttle
     AP_Float            _boost_scale;
 
