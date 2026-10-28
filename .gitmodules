@@ -12,7 +12,7 @@
 	branch = qhz/mavlink
 [submodule "gtest"]
 	path = modules/gtest
-	url = https://github.com/ArduPilot/googletest
+	url = git@github.com:aibook008/googletest.git
 [submodule "modules/ChibiOS"]
 	path = modules/ChibiOS
 	url = git@github.com:aibook008/ChibiOS.git
