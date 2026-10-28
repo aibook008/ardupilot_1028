@@ -1,44 +1,58 @@
 [submodule "modules/waf"]
 	path = modules/waf
-	url = https://github.com/ArduPilot/waf.git
+	url = git@github.com:aibook008/waf.git
+	branch = qhz/waf
 [submodule "modules/gbenchmark"]
 	path = modules/gbenchmark
-	url = https://github.com/google/benchmark.git
+	url = git@github.com:aibook008/gbenchmark.git
+	branch = qhz/gbenchmark
 [submodule "modules/mavlink"]
 	path = modules/mavlink
-	url = https://github.com/ArduPilot/mavlink
+	url = git@github.com:aibook008/mavlink.git
+	branch = qhz/mavlink
 [submodule "gtest"]
 	path = modules/gtest
 	url = https://github.com/ArduPilot/googletest
 [submodule "modules/ChibiOS"]
 	path = modules/ChibiOS
-	url = https://github.com/ArduPilot/ChibiOS.git
+	url = git@github.com:aibook008/ChibiOS.git
+	branch = qhz/ChibiOS
 [submodule "modules/gsoap"]
 	path = modules/gsoap
-	url = https://github.com/ArduPilot/gsoap
+	url = git@github.com:aibook008/gsoap.git
+	branch = qhz/gsoap
 [submodule "modules/DroneCAN/DSDL"]
 	path = modules/DroneCAN/DSDL
-	url = https://github.com/DroneCAN/DSDL.git
+	url = git@github.com:aibook008/DSDL.git
+	branch = qhz/DSDL
 [submodule "modules/CrashDebug"]
 	path = modules/CrashDebug
-	url = https://github.com/ardupilot/CrashDebug
+	url = git@github.com:aibook008/CrashDebug.git
+	branch = qhz/CrashDebug
 [submodule "modules/DroneCAN/pydronecan"]
 	path = modules/DroneCAN/pydronecan
-	url = https://github.com/DroneCAN/pydronecan
+	url = git@github.com:aibook008/pydronecan.git
+	branch = qhz/pydronecan
 [submodule "modules/DroneCAN/dronecan_dsdlc"]
 	path = modules/DroneCAN/dronecan_dsdlc
-	url = https://github.com/DroneCAN/dronecan_dsdlc
+	url = git@github.com:aibook008/dronecan_dsdlc.git
+	branch = qhz/dronecan_dsdlc
 [submodule "modules/DroneCAN/libcanard"]
 	path = modules/DroneCAN/libcanard
-	url = https://github.com/DroneCAN/libcanard
+	url = git@github.com:aibook008/libcanard.git
+	branch = qhz/libcanard
 [submodule "modules/Micro-XRCE-DDS-Client"]
 	path = modules/Micro-XRCE-DDS-Client
-	url = https://github.com/ardupilot/Micro-XRCE-DDS-Client.git
-	branch = master
+	url = git@github.com:aibook008/Micro-XRCE-DDS-Client.git
+	branch = qhz/Micro-XRCE-DDS-Client
 [submodule "modules/Micro-CDR"]
 	path = modules/Micro-CDR
-	url = https://github.com/ardupilot/Micro-CDR.git
-	branch = master
+	url = git@github.com:aibook008/Micro-CDR.git
+	branch = qhz/Micro-CDR
 [submodule "modules/lwip"]
 	path = modules/lwip
-	url = https://github.com/ArduPilot/lwip.git
+	url = git@github.com:aibook008/lwip.git
+	branch = qhz/lwip
+[submodule "modules/gtest"]
+	url = git@github.com:aibook008/gtest.git
+	branch = qhz/gtest
