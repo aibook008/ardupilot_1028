@@ -130,10 +130,10 @@ static Motor df200_motors[] =
     // Inner tilting (①⑤②⑥ → FR/RL/FL/RR in JT-20 motor order)
     // pitch_min/max = 0,-90: PWM MIN → true vertical (0°), PWM MAX → forward (-90°).
     // Do NOT copy jt20's (10,-90): that makes PWM=1000 a +10° forward bias in SITL.
-    Motor(AP_MOTORS_MOT_1,   37.32f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 1, -1, 0, 0, 9, 0, -90), // ① FR tilt → Right
-    Motor(AP_MOTORS_MOT_2, -142.52f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 3, -1, 0, 0, 8, 0, -90), // ⑥ RL tilt → Left
-    Motor(AP_MOTORS_MOT_3,  -37.32f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  4, -1, 0, 0, 8, 0, -90), // ⑤ FL tilt → Left
-    Motor(AP_MOTORS_MOT_4,  142.52f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  2, -1, 0, 0, 9, 0, -90), // ② RR tilt → Right
+    Motor(AP_MOTORS_MOT_1,   37.32f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  1, -1, 0, 0, 9, 0, -90), // ① FR tilt → Right
+    Motor(AP_MOTORS_MOT_2, -142.52f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  3, -1, 0, 0, 8, 0, -90), // ⑥ RL tilt → Left
+    Motor(AP_MOTORS_MOT_3,  -37.32f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 4, -1, 0, 0, 8, 0, -90), // ⑤ FL tilt → Left
+    Motor(AP_MOTORS_MOT_4,  142.52f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 2, -1, 0, 0, 9, 0, -90), // ② RR tilt → Right
     // Outer fixed vertical (③⑧⑦④)
     Motor(AP_MOTORS_MOT_5,   67.08f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 5), // ③ FR vert
     Motor(AP_MOTORS_MOT_6, -112.74f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 6), // ⑧ RL vert
