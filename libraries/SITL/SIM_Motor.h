@@ -57,7 +57,7 @@ public:
 
     Motor(uint8_t _servo, float _angle, float _yaw_factor, uint8_t _display_order) :
         angle(_angle), // angle in degrees from front
-        yaw_factor(_yaw_factor), // positive is clockwise
+        yaw_factor(_yaw_factor), // positive is CCW prop; reaction torque is +Z (down, NED)
         servo(_servo), // what servo output drives this motor
         display_order(_display_order) // order for clockwise display
     {
@@ -77,7 +77,7 @@ public:
           int8_t _roll_servo, float _roll_min, float _roll_max,
           int8_t _pitch_servo, float _pitch_min, float _pitch_max) :
         angle(_angle), // angle in degrees from front
-        yaw_factor(_yaw_factor), // positive is clockwise
+        yaw_factor(_yaw_factor), // positive is CCW prop; reaction torque is +Z (down, NED)
         servo(_servo), // what servo output drives this motor
         display_order(_display_order), // order for clockwise display
         roll_servo(_roll_servo),

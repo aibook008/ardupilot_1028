@@ -76,8 +76,20 @@ void Motor::calculate_forces(const struct sitl_input &input,
     }
 
     // the yaw torque of the motor
-    const float yaw_scale = 0.05 * diagonal_size * motor_thrust;
-    Vector3f rotor_torque = thrust_vector * yaw_factor * command * yaw_scale * -1.0;
+    float yaw_tq;
+    if (thrust_model == TABLE_DF200_OUTER_60IN) {
+        // DF-200: measured shaft torque from the bench table, sign carried
+        // by yaw_factor (CW/CCW installation direction). Replaces the stock
+        // proxy which over-estimates reaction torque ~15-38x
+        // (docs/df200_model_alignment_plan.md §2-D).
+        yaw_tq = DF200MotorTable::prop60_torque(last_rpm, yaw_factor);
+    } else if (thrust_model == TABLE_DF200_INNER_40IN) {
+        yaw_tq = DF200MotorTable::prop40_torque(last_rpm, velocity_in, yaw_factor);
+    } else {
+        const float yaw_scale = 0.05 * diagonal_size * motor_thrust;
+        yaw_tq = yaw_factor * command * yaw_scale;
+    }
+    Vector3f rotor_torque = thrust_vector * yaw_tq * -1.0;
 
     // thrust in bodyframe NED
     thrust = thrust_vector * motor_thrust;
@@ -206,8 +218,17 @@ void Motor::calculate_forces(const struct sitl_input &input,
     }
     if (thrust_mag) *thrust_mag = motor_thrust;
 
-    const float yaw_scale = 0.05 * diagonal_size * motor_thrust;
-    Vector3f rotor_torque = thrust_vector * yaw_factor * command * yaw_scale * -1.0;
+    // same DF-200 measured reaction torque as the primary path above
+    float yaw_tq;
+    if (thrust_model == TABLE_DF200_OUTER_60IN) {
+        yaw_tq = DF200MotorTable::prop60_torque(last_rpm, yaw_factor);
+    } else if (thrust_model == TABLE_DF200_INNER_40IN) {
+        yaw_tq = DF200MotorTable::prop40_torque(last_rpm, velocity_in, yaw_factor);
+    } else {
+        const float yaw_scale = 0.05 * diagonal_size * motor_thrust;
+        yaw_tq = yaw_factor * command * yaw_scale;
+    }
+    Vector3f rotor_torque = thrust_vector * yaw_tq * -1.0;
     thrust = thrust_vector * motor_thrust;
 
     float roll = 0, pitch = 0;
