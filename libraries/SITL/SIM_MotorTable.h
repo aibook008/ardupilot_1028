@@ -8,16 +8,27 @@
   DF-200 propeller thrust/power lookup tables.
 
   TEST-ONLY code, DF-200 SITL only (see Motor::ThrustModel in SIM_Motor.h).
-  Data source: docs/电机电池.docx
-    - table 0: 60in lift prop (outer MOT_5..8), static bench test, 15 points
-    - table 1: 40in cruise prop (inner MOT_1..4), wind tunnel, RPM x wind
-      speed (0/2.9/10.1/20/30/40/50 m/s), 63 points (duplicate rows averaged)
 
-  Thrust converted from gram-force to newtons (x 9.80665/1000), power from
-  kW to W. Tables calibrated at ~398 V; voltage sag is not modelled.
-  Density scaling (rho/1.225) is applied by the caller.
+  Data sources (2026-10-29 revision):
+    - 60in lift prop (outer MOT_5..8): measured bench data for motor 165M20
+      + RY60 prop + XD400V ESC, 4 test runs merged (median, 100 rpm bins,
+      monotonicity-cleaned). Source: docs/df_original_documents/
+      165M20峰值拉力测试数据/, see docs/df200_motor_data_bench.md.
+      Replaces the old docx 表0 table (peak 1379 N @3181 rpm) which belongs
+      to a different, unidentified motor/prop set (-20% thrust vs measured).
+    - 40in cruise prop (inner MOT_1..4): docx 表1 wind-tunnel tablepppppppppppppppppppppppppppppppppppppp
+      (docs/电机电池.docx), RPM x wind speed (0/2.9/10.1/20/30/40/50 m/s),
+      63 points (duplicate rows averaged). UNIT FIX: the docx "thrust (g)"
+      column is actually newtons — cross-checked point-by-point against the
+      135M10+DH40 bench data (ratio 0.98..1.04, torque/power columns match
+      too). The old code divided by 981, making prop40 thrust 98x too small.
+      See docs/df200_motor_data_bench.md §4 and
+      docs/df200_hover_corridor_bench_derivation.md §4.3.
 
-  Why this exists: the momentum-disc calc_thrust() gives negative thrust at
+  Power columns are electrical input power (U*I); current = power/voltage
+  in the caller. Thrust scaled by air_density/1.225 by the caller.
+
+  Why this exists: the momentum-disc calc_thrust() gives negative thrust atpppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp
   AS=50 with hover command (Vout < Vin) and squares small per-motor velin
   differences into a same-sign Mx positive feedback (see
   docs/vtol_df200.md §11.10 and docs/df200_motor_thrust_derivation.md).
@@ -30,30 +41,35 @@
 namespace SITL {
 namespace DF200MotorTable {
 
-// 60in lift prop, static (docs/电机电池.docx 表0). RPM 1551..3181.
-static const float prop60_rpm[15] = {
-    1551, 1680, 1895, 2023, 2175, 2294, 2386, 2470,
-    2604, 2759, 2874, 2939, 3035, 3111, 3181,
+// 60in lift prop, static (165M20 + RY60 bench, 24 points). RPM 350..3150.
+// Below 350 rpm: quadratic through origin. Above 3150: clamp to last value.
+static const float prop60_rpm[24] = {
+    350, 850, 1050, 1150, 1250, 1350, 1450, 1550,
+    1650, 1750, 1850, 1950, 2050, 2150, 2250, 2350,
+    2450, 2550, 2650, 2750, 2850, 2950, 3050, 3150,
 };
-static const float prop60_thrust_N[15] = {
-    278.3f, 343.3f, 444.3f, 510.5f, 596.1f, 645.6f, 697.0f, 748.6f,
-    863.6f, 970.5f, 1066.8f, 1137.8f, 1222.7f, 1280.9f, 1379.2f,
+static const float prop60_thrust_N[24] = {
+    20.1f, 79.0f, 120.8f, 144.7f, 171.8f, 202.0f, 233.6f, 262.3f,
+    300.2f, 334.8f, 375.4f, 421.8f, 468.6f, 513.3f, 565.8f, 610.4f,
+    667.6f, 727.8f, 785.7f, 843.7f, 909.4f, 985.8f, 1066.4f, 1106.3f,
 };
-static const float prop60_power_W[15] = {
-    3048, 3938, 5768, 7102, 8931, 10347, 11694, 13199,
-    15734, 19062, 21810, 23879, 26638, 29168, 32043,
+static const float prop60_power_W[24] = {
+    329, 793, 1276, 1640, 1936, 2433, 2829, 3359,
+    3973, 4618, 5395, 6341, 7244, 8486, 9645, 11074,
+    12576, 14213, 15844, 17905, 19935, 22275, 25102, 26958,
 };
-// shaft torque [N·m], docx table 0 torque column (measured). Signed by the
-// caller's yaw_factor sign — see prop60_torque()/prop40_torque() below.
-// Cross-check: docs/数据库_v2.xlsx 动力参数 sheet gives Q=32.00 N·m at
-// 2019 rpm, matching the interp of this column (18.77..33.53 over
-// 1551..2023 rpm) to <0.2 N·m.
-static const float prop60_torque_Nm[15] = {
-    18.77f, 22.39f, 29.07f, 33.53f, 39.22f, 43.08f, 46.81f, 51.04f,
-    57.71f, 65.99f, 72.48f, 77.60f, 83.83f, 89.55f, 96.21f,
+// shaft torque [N·m], signed by the caller's yaw_factor sign — see
+// prop60_torque()/prop40_torque() below.
+static const float prop60_torque_Nm[24] = {
+    4.34f, 6.48f, 8.70f, 11.14f, 12.23f, 14.40f, 16.19f, 18.11f,
+    20.25f, 22.43f, 25.00f, 27.98f, 30.70f, 34.30f, 37.26f, 40.98f,
+    44.54f, 48.55f, 51.96f, 56.43f, 60.79f, 65.68f, 71.11f, 74.40f,
 };
 
 // 40in cruise prop, one branch per wind speed (docs/电机电池.docx 表1).
+// UNIT FIX (2026-10-29): thrust_N holds the docx "拉力" column value
+// directly — that column is newtons, not grams (bench-verified, see header
+// comment). Power (electrical W) and torque (N·m) columns unchanged.
 struct Prop40Entry {
     float rpm;
     float thrust_N;

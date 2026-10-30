@@ -71,7 +71,7 @@ void Motor::calculate_forces(const struct sitl_input &input,
         motor_thrust = calc_thrust(command, air_density, velocity_in, voltage_scale);
         last_rpm = 0;
     } else {
-        last_rpm = command * (thrust_model == TABLE_DF200_OUTER_60IN ? 3181.0f : 4200.0f);
+        last_rpm = command * (thrust_model == TABLE_DF200_OUTER_60IN ? 3150.0f : 3050.0f);
         motor_thrust = calc_thrust_table(command, air_density, velocity_in);
     }
 
@@ -213,7 +213,9 @@ void Motor::calculate_forces(const struct sitl_input &input,
         motor_thrust = calc_thrust(command, air_density, velocity_in, voltage_scale);
         last_rpm = 0;
     } else {
-        last_rpm = command * (thrust_model == TABLE_DF200_OUTER_60IN ? 3181.0f : 4200.0f);
+        // peak rpm from bench data: 165M20 outer 3150, 135M10 inner 3050
+        // (docs/df200_motor_data_bench.md). Was 3181/4200 from docx tables.
+        last_rpm = command * (thrust_model == TABLE_DF200_OUTER_60IN ? 3150.0f : 3050.0f);
         motor_thrust = calc_thrust_table(command, air_density, velocity_in);
     }
     if (thrust_mag) *thrust_mag = motor_thrust;
