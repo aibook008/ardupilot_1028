@@ -15,7 +15,7 @@ replay of that same computation with the same inputs -- not a new model.
 
 Data chain (verified against source):
   rotor.log row (20 Hz)
-    rpm[8]   = motors[i].get_rpm() = cmd * (3181 outer / 4200 inner)  [SIM_Motor.cpp:74]
+    rpm[8]   = motors[i].get_rpm() = cmd * (3150 outer / 3050 inner)  [SIM_Motor.cpp:74]
     velin[8] = velocity_in = -motor_vel.projected(thrust_vector).z     [SIM_Motor.cpp:66]
     AS       = get_velocity_air_ef().length()                          [SIM_Frame.cpp:672]
     Tzi/Txi  = pm_thrust.z/.x (same table, same inputs -> sanity check)
@@ -49,22 +49,30 @@ ROTOR = "/tmp/df200_rotor.log"
 
 # ---------------------------------------------------------------------------
 # Motor tables -- transcribed verbatim from libraries/SITL/SIM_MotorTable.h.
-# Thrust was already g->N (x 9.80665/1000) in the C++ source; power kW->W (x1000).
-# Tables calibrated at ~398 V; voltage sag not modelled. Density scaling is
+# 2026-10-29 revision: prop60 replaced with 165M20+RY60 bench data (24 pts);
+# prop40 thrust values are the docx "拉力" column taken as NEWTONS (that column
+# was mislabelled grams; bench-verified, see docs/df200_motor_data_bench.md §4).
+# Power columns are electrical W. Voltage sag not modelled. Density scaling is
 # applied by the SITL caller to *thrust*, not to power (we keep table power as-is,
 # matching SIM_Motor.cpp which uses table power directly for current).
+# cmd->rpm peak constants (SIM_Motor.cpp): 3150 outer / 3050 inner.
 # ---------------------------------------------------------------------------
 
-# 60in lift prop, static (docs/电机电池.docx 表0). RPM 1551..3181.
-prop60_rpm = [1551, 1680, 1895, 2023, 2175, 2294, 2386, 2470,
-              2604, 2759, 2874, 2939, 3035, 3111, 3181]
-prop60_thrust_N = [278.3, 343.3, 444.3, 510.5, 596.1, 645.6, 697.0, 748.6,
-                   863.6, 970.5, 1066.8, 1137.8, 1222.7, 1280.9, 1379.2]
-prop60_power_W = [3048, 3938, 5768, 7102, 8931, 10347, 11694, 13199,
-                  15734, 19062, 21810, 23879, 26638, 29168, 32043]
+# 60in lift prop, static (165M20 + RY60 bench, 24 points). RPM 350..3150.
+prop60_rpm = [350, 850, 1050, 1150, 1250, 1350, 1450, 1550,
+              1650, 1750, 1850, 1950, 2050, 2150, 2250, 2350,
+              2450, 2550, 2650, 2750, 2850, 2950, 3050, 3150]
+prop60_thrust_N = [20.1, 79.0, 120.8, 144.7, 171.8, 202.0, 233.6, 262.3,
+                   300.2, 334.8, 375.4, 421.8, 468.6, 513.3, 565.8, 610.4,
+                   667.6, 727.8, 785.7, 843.7, 909.4, 985.8, 1066.4, 1106.3]
+prop60_power_W = [329, 793, 1276, 1640, 1936, 2433, 2829, 3359,
+                  3973, 4618, 5395, 6341, 7244, 8486, 9645, 11074,
+                  12576, 14213, 15844, 17905, 19935, 22275, 25102, 26958]
 
 
 # 40in cruise prop, one branch per wind speed (docs/电机电池.docx 表1).
+# thrust_N = docx "拉力" column as-is (newtons, mislabelled g in docx);
+# bench cross-check vs 135M10+DH40: ratio 0.98..1.04.
 class E:
     __slots__ = ('rpm', 'thrust_N', 'power_W')
 
@@ -310,7 +318,8 @@ def bin_edges(binpath, t_end):
     """
     edges = dict(arm=None, tilt_start=None, fw_done=None,
                  trans_start=None, aspd_reached=None, takeoff=None,
-                 tilt_series=[])
+                 reverse_start=None, reverse_done=None,
+                 land_desc_start=None, tilt_series=[])
     m = mavutil.mavlink_connection(binpath)
     tilt_first = None
     while True:
@@ -331,6 +340,8 @@ def bin_edges(binpath, t_end):
                 edges['aspd_reached'] = t
             if 'Transition FW done' in txt and edges['fw_done'] is None:
                 edges['fw_done'] = t
+            if 'Land descend started' in txt and edges['land_desc_start'] is None:
+                edges['land_desc_start'] = t
         elif typ == 'TILT':
             tilt = getattr(msg, 'Tilt', 0.0)
             edges['tilt_series'].append((t, tilt))
@@ -340,6 +351,27 @@ def bin_edges(binpath, t_end):
     edges['tilt_start'] = tilt_first
     if edges['trans_start'] is not None:
         edges['tilt_start'] = edges['trans_start']
+
+    # A complete mission can contain a second, reverse transition on approach.
+    # There is usually no second "Transition started" MSG, so detect the first
+    # sustained tilt descent after the forward transition.  Ignore the small
+    # settling movement immediately after FW_DONE: require a real descending
+    # run (at least 1 second and 3 degrees).
+    if edges['fw_done'] is not None and len(edges['tilt_series']) >= 12:
+        tt = np.array([x[0] for x in edges['tilt_series']])
+        tv = np.array([x[1] for x in edges['tilt_series']])
+        for i in range(len(tv) - 24):
+            if tt[i] < edges['fw_done'] + 5.0 or tv[i] >= 89.0:
+                continue
+            j = i + 24
+            if tv[i] - tv[j] >= 3.0 and np.all(np.diff(tv[i:j + 1]) < 0.0):
+                edges['reverse_start'] = float(tt[i])
+                # first return to the vertical endpoint after the reverse
+                # transition; allow a small numerical tolerance around zero.
+                k = np.where((tt > tt[i]) & (tv <= 1.0))[0]
+                if len(k):
+                    edges['reverse_done'] = float(tt[k[0]])
+                break
     return edges
 
 
@@ -474,7 +506,9 @@ def make_plots(series, phase_list, tilt_series, outdir, smooth_s):
     t = series['t']
     # phase boundary times for axvspan shading
     phase_colors = {'ground_idle': '#dddddd', 'vtol_climb': '#bbdefb',
-                    'transition': '#ffe0b2', 'fw_cruise': '#c8e6c9'}
+                    'transition_fwd': '#ffe0b2', 'fw_cruise': '#c8e6c9',
+                    'transition_rev': '#ffe0b2', 'vtol_approach': '#d7ccc8',
+                    'vtol_landing': '#b2dfdb'}
     out = []
 
     def shade(ax):
@@ -614,6 +648,31 @@ def phase_stats(rows, replay, t0, t1, name):
     )
 
 
+def motor_thrust_phase_stats(rows, phase_list):
+    """Return per-motor mean thrust for each phase and full-flight peaks.
+
+    ``thrmag`` is the logged thrust magnitude before tilt projection, in N,
+    and is the direct per-motor output from the current SITL model.
+    """
+    means = {}
+    for name, t0, t1 in phase_list:
+        values = [r['thrmag'] for r in rows
+                  if t0 <= r['t'] <= t1 and 'thrmag' in r]
+        if values:
+            means[name] = np.mean(np.asarray(values), axis=0)
+    values = [r['thrmag'] for r in rows if 'thrmag' in r]
+    if values:
+        arr = np.asarray(values)
+        ts = np.asarray([r['t'] for r in rows if 'thrmag' in r])
+        peak_idx = np.argmax(arr, axis=0)
+        peaks = arr[peak_idx, np.arange(arr.shape[1])]
+        peak_t = ts[peak_idx]
+    else:
+        peaks = np.full(8, np.nan)
+        peak_t = np.full(8, np.nan)
+    return means, peaks, peak_t
+
+
 def tilt_slice_stats(rows, replay, tilt_series, t_start, t_end,
                      bins=(0, 30, 45, 60, 90)):
     """Slice the transition phase by tilt angle and compute per-slice power.
@@ -715,7 +774,9 @@ def main():
     fw_done = edges.get('fw_done')
     takeoff = edges.get('takeoff')
     print(f"# edges: takeoff={takeoff}  trans_start={trans_start}  "
-          f"aspd_reached={edges.get('aspd_reached')}  fw_done={fw_done}")
+          f"aspd_reached={edges.get('aspd_reached')}  fw_done={fw_done} "
+          f"reverse_start={edges.get('reverse_start')} reverse_done={edges.get('reverse_done')} "
+          f"land_desc_start={edges.get('land_desc_start')}")
 
     # hover starts when motors first spin up (first rpm>500); before that is
     # ground idle. transition starts at trans_start; cruise at fw_done.
@@ -747,20 +808,38 @@ def main():
                 run = 0
         if fw_done is None:
             fw_done = t_end
+    reverse_start = edges.get('reverse_start')
+    reverse_done = edges.get('reverse_done')
+    if reverse_start is None or reverse_start <= fw_done:
+        reverse_start = t_end
+    if reverse_done is None or reverse_done <= reverse_start:
+        reverse_done = t_end
+    land_desc_start = edges.get('land_desc_start')
+    if land_desc_start is None or land_desc_start <= reverse_done:
+        land_desc_start = t_end
     print(f"# phases: ground [{rows[0]['t']:.2f},{hover_start:.2f}]  "
           f"vtol_climb [{hover_start:.2f},{trans_start:.2f}]  "
-          f"transition [{trans_start:.2f},{fw_done:.2f}]  "
-          f"cruise [{fw_done:.2f},{t_end:.2f}]")
+          f"transition_fwd [{trans_start:.2f},{fw_done:.2f}]  "
+          f"fw_cruise [{fw_done:.2f},{reverse_start:.2f}]  "
+          f"transition_rev [{reverse_start:.2f},{reverse_done:.2f}]  "
+          f"vtol_approach [{reverse_done:.2f},{land_desc_start:.2f}]  "
+          f"vtol_landing [{land_desc_start:.2f},{t_end:.2f}]")
 
     edges['hover_start'] = hover_start
     edges['trans_start'] = trans_start
     edges['fw_done'] = fw_done
+    edges['reverse_start'] = reverse_start
+    edges['reverse_done'] = reverse_done
+    edges['land_desc_start'] = land_desc_start
 
     phases = [
         ('ground_idle', rows[0]['t'], hover_start),
         ('vtol_climb', hover_start, trans_start),
-        ('transition', trans_start, fw_done),
-        ('fw_cruise', fw_done, t_end),
+        ('transition_fwd', trans_start, fw_done),
+        ('fw_cruise', fw_done, reverse_start),
+        ('transition_rev', reverse_start, reverse_done),
+        ('vtol_approach', reverse_done, land_desc_start),
+        ('vtol_landing', land_desc_start, t_end),
     ]
     stats = []
     for name, t0, t1 in phases:
@@ -818,9 +897,9 @@ def write_report(args, stats, rows, replay, edges, ratios,
     lines = []
     A = lines.append
     A("# DF-200 电机总功率走廊（自动生成）\n")
-    A("> 数据源：`/tmp/df200_rotor.log`（20Hz 全程）+ DataFlash BIN 阶段边界  ")
+    A(f"> 数据源：`{args.bin}` + `{args.rotor}`（20Hz 全程）+ DataFlash BIN 阶段边界  ")
     A("> 分析脚本：`docs/scripts/df200_power_analysis.py`  ")
-    A("> 电机表：`libraries/SITL/SIM_MotorTable.h`（源自 `docs/电机电池.docx`，详见 `docs/df200_motor_data.md`）  ")
+    A("> 电机表：`libraries/SITL/SIM_MotorTable.h`（外桨 165M20 台架 + 内桨 docx 表1 单位修正，详见 `docs/df200_motor_data_bench.md`）  ")
     A("> 功率反查与 SITL 内部 `SIM_Motor.cpp:138-140` 完全同函数同输入（内桨用 `velin` 非 `AS`）\n")
 
     A("## 1. 功率走廊表\n")
@@ -830,18 +909,35 @@ def write_report(args, stats, rows, replay, edges, ratios,
         A(f"| {s['name']} | {s['n']} | {s['dur']:.1f} | {s['P_avg']:.2f} | {s['P_peak']:.2f} | "
           f"{s['P_p95']:.2f} | {s['Pi_avg']:.2f} | {s['Po_avg']:.2f} | {s['energy_Wh']:.1f} | {s['clamp_frac']*100:.0f}% |")
 
-    A("\n## 2. 阶段边界（来自 BIN MSG/TILT）\n")
+    A("\n## 2. 八个电机拉力输出变化（N）\n")
+    A("> 拉力取 rotor log 的 `thrmag`，是当前电机模型计算的单电机推力大小，未做倾转后的体轴投影。\n")
+    thrust_means, thrust_peaks, thrust_peak_t = motor_thrust_phase_stats(rows, phase_list)
+    phase_names = [name for name, _, _ in phase_list]
+    A("| 电机 | 类型 | " + " | ".join(f"{name}均值" for name in phase_names) + " | 全程峰值 @ t(s) |")
+    A("|------|------|" + "|".join("--------" for _ in phase_names) + "|----------------|" )
+    for i in range(8):
+        motor_type = '内桨40in' if i < 4 else '外桨60in'
+        vals = []
+        for name in phase_names:
+            vals.append(f"{thrust_means[name][i]:.1f}" if name in thrust_means else "—")
+        vals.append(f"{thrust_peaks[i]:.1f} @ {thrust_peak_t[i]:.2f}")
+        A(f"| MOT_{i+1} | {motor_type} | " + " | ".join(vals) + " |")
+
+    A("\n## 3. 阶段边界（来自 BIN MSG/TILT）\n")
     A(f"- vtol_climb_start（首帧 rpm>500，VTOL takeoff 爬升开始）: t={edges.get('hover_start')}")
     A(f"- trans_start（MSG 'Transition started' / TILT>1°）: t={edges.get('trans_start')}")
     A(f"- aspd_reached（MSG 'airspeed reached'）: t={edges.get('aspd_reached')}")
-    A(f"- fw_done（MSG 'Transition FW done' / AS>45 持续1s）: t={edges.get('fw_done')}")
+    A(f"- fw_done（MSG 'Transition FW done'）: t={edges.get('fw_done')}")
+    A(f"- reverse_start（返航时倾转角开始持续下降）: t={edges.get('reverse_start')}")
+    A(f"- reverse_done（返航时回到垂起角）: t={edges.get('reverse_done')}")
+    A(f"- land_desc_start（MSG 'Land descend started'，实际着陆下降开始）: t={edges.get('land_desc_start')}")
     A("\n> 注：vtol_climb 段是 AUTO VTOL takeoff 爬升到任务高度的过程，控制律按 "
       "Q_WP_SPEED_UP 大油门爬升（实测 cmd≈0.9、T/W≈1.5），功率高是真实爬升行为，"
       "不是稳态悬停功率。本趟无稳态悬停段。")
 
-    A("\n## 3. 内外桨分工\n")
-    A("外桨 60in（MOT_5..8，固定垂起）：垂起爬升主导，过渡段逐步 SHUTDOWN，FW 段归零。")
-    A("内桨 40in（MOT_1..4，倾转）：爬升期贡献小，过渡段倾转后接管推进，FW 巡航段为唯一动力源。\n")
+    A("\n## 4. 内外桨分工\n")
+    A("外桨 60in（MOT_5..8，固定垂起）：垂起爬升和垂起着陆主导；正向过渡后归零。")
+    A("内桨 40in（MOT_1..4，倾转）：垂起段贡献较小；正向过渡和固定翼巡航阶段承担推进；反向过渡时功率下降。\n")
     A("| 阶段 | 内桨峰值 kW | 外桨峰值 kW | 主导 |")
     A("|------|------------|------------|------|")
     for s in stats:
@@ -850,7 +946,7 @@ def write_report(args, stats, rows, replay, edges, ratios,
 
     allP = np.array([rp['P_total'] for rp in replay])
     peak_i = int(np.argmax(allP))
-    A("\n## 4. 全程峰值\n")
+    A("\n## 5. 全程峰值\n")
     A(f"峰值功率 {allP[peak_i]/1e3:.2f} kW @ t={rows[peak_i]['t']:.2f}s（AS={rows[peak_i]['AS']:.1f} m/s）。")
     inner = replay[peak_i]['P_inner'] / 1e3
     outer = replay[peak_i]['P_outer'] / 1e3
@@ -859,7 +955,7 @@ def write_report(args, stats, rows, replay, edges, ratios,
     if ratios:
         med = np.median(ratios)
         spread = np.percentile(ratios, 95) - np.percentile(ratios, 5)
-        A("\n## 5. Sanity check（反查正确性）\n")
+        A("\n## 6. Sanity check（反查正确性）\n")
         A(f"脚本反算推力 / 日志 `thrmag`（推力大小，未投影）：中位 {med:.3f}，"
           f"p5-p95 散度 {spread:.3f}。")
         A(f"比值稳定（散度<0.05）= 反查链正确。比值 {med:.3f} 对应空气密度 "
@@ -869,15 +965,15 @@ def write_report(args, stats, rows, replay, edges, ratios,
         A("\n> 注：不能用 `Tzi/Txi` 对比——那是倾转后投影到体轴的分量（内桨倾转角余弦），"
           "过渡段会差 1/cos(tilt)~1.5 倍，不代表反查错误。`thrmag` 才是推力大小。")
 
-    A("\n## 6. 各段功率成因（以仿真实测为准）\n")
-    A("- **vtol_climb（垂起爬升）**：AUTO VTOL takeoff 按 Q_WP_SPEED_UP 大油门爬升到任务高度，"
-      "cmd≈0.9、T/W≈1.5，外桨 rpm 接近满推（~2900+），功率高是爬升所需，非稳态悬停。")
-    A("- **transition（过渡）**：外桨随 tilt 退场 + 内桨倾转后接管推进，两桨叠加段功率仍高；"
-      "tilt 到位、外桨 SHUTDOWN 后内桨推进功率随来流升高。")
-    A("- **fw_cruise（FW 巡航）**：外桨已 SHUTDOWN（cmd5-8=0），仅内桨 4× 推进，"
-      "稳态功率即巡航所需推进功率。")
+    A("\n## 7. 各段功率成因（以本 BIN 和最新电机表为准）\n")
+    A("- **vtol_climb**：从首帧转速超过 500 rpm 到正向过渡开始；这次是约 1 m/s 的 AUTO 爬升，平均功率高于悬停，不能当作悬停功率。")
+    A("- **transition_fwd**：倾转角从 0° 增至约 90°，内外桨同时工作，外桨逐步退出，内桨接管推进。")
+    A("- **fw_cruise**：正向过渡完成到返航反向过渡开始；本次外桨功率为 0，只有内桨推进，平均功率是 {:.2f} kW。".format(next((s['P_avg'] for s in stats if s['name'] == 'fw_cruise'), float('nan'))))
+    A("- **transition_rev**：返航时倾转角从约 90° 回到 0°。")
+    A("- **vtol_approach**：倾转已回到 0°，但仍在 VTOL 进近定位，尚未收到 `Land descend started`。")
+    A("- **vtol_landing**：以 MSG `Land descend started` 为边界的实际着陆下降段；这几段都不能并入固定翼巡航统计。")
 
-    A("\n## 7. 差动对功率的影响（恒定总推力下，差动越大功率越高）\n")
+    A("\n## 8. 差动对功率的影响（恒定总推力下，差动越大功率越高）\n")
     A("> **结论**：总推力恒定时，差动越大（推力集中到少数桨）总功率越高。"
       "这是峰值功率高的成因之一，也是降峰值的切入点。\n")
     A("**数学关系**（外桨静态表实测）：")
@@ -898,23 +994,17 @@ def write_report(args, stats, rows, replay, edges, ratios,
     A("\n**物理解读**：高推力桨的功率'超线性增长'（推力翻倍功率涨 2.83 倍），"
       "低推力桨省的功率补不回高推力桨多花的——所以同样总推力，集中给少数桨更耗功率。")
     A("\n**对峰值功率的指导**：")
-    A("- 峰值 150kW 出现在起飞瞬间，外桨呈'两满两关'强差动（cmd [1,0,0,1]，RCOU span~800），"
-      "这正是差动极大、功率最高的分布。")
-    A("- 倾转瞬间（t=87.5）差动收窄（span 798→106，四桨趋近中油门），"
-      "总功率从 107→66kW——即使总推力需求没降，差动收窄也使功率降低（凸函数性质）。")
+    peak_cmd = rows[peak_i].get('cmd')
+    if peak_cmd is not None:
+        A(f"- 本次全程峰值发生在 t={rows[peak_i]['t']:.2f}s，峰值时 cmd="
+          f"[{','.join(f'{x:.2f}' for x in peak_cmd)}]；应结合该时刻的滚转/俯仰限幅判断峰值来源。")
+    A("- 差动越大，推力越集中到少数桨，查表功率的凸性会放大总功率；因此应同时看 MOTT、RATE 输出和功率峰值，不能只看 collective。")
     A("- **降峰值方向**：限制单桨 cmd 上限（避免打满个别电机）、或优化混控差动分配使推力更均匀，"
       "可在同样总推力下降低峰值功率。")
 
-    A("\n## 9. 已知局限\n")
-    A("- velin>50 时 `prop40_power` 钳到 50 分支（`SIM_MotorTable.h:210`），巡航来流>50 段功率为下界估计")
-    A("- 表在 ~398 V 标定，未建模电压跌落（满载 sag ~0.8%，见 `df200_motor_data.md` §3.4）")
-    A("- 功率未做空气密度修正（SITL `Motor::calculate_forces` 对推力做 ρ 缩放，功率用表值，与内部一致）")
-    A("- 短段（过渡 ~3-5s）p95 比 peak 更稳健，peak 易被单拍噪声拉高")
-    A(f"- 图表功率经 {args.smooth}s 滑动平均滤波（`--smooth` 可调，0=关闭）")
-
     # ---- transition by tilt slice ----
     if tilt_stats:
-        A("\n## 8. transition 按 tilt 角度切片（功率随倾转角变化，与时间无关）\n")
+        A("\n## 9. transition 按 tilt 角度切片（功率随倾转角变化，与时间无关）\n")
         A("> transition 段按 tilt 角度切（0-30/30-45/45-60/60-90°），不是按时间。"
           "功率随倾转角物理变化：tilt 涨则外桨垂直分量衰减、内桨推进建立。\n")
         A("| tilt 切片 | 采样点 | 时长 s | 平均 kW | 峰值 kW | p95 kW | 内桨均 kW | 外桨均 kW | 能耗 Wh |")
@@ -923,24 +1013,22 @@ def write_report(args, stats, rows, replay, edges, ratios,
             A(f"| {s['name']} | {s['n']} | {s['dur']:.1f} | {s['P_avg']:.2f} | "
               f"{s['P_peak']:.2f} | {s['P_p95']:.2f} | {s['Pi_avg']:.2f} | {s['Po_avg']:.2f} | "
               f"{s['energy_Wh']:.1f} |")
-        A("\n> **transition 段外桨功率的真实分布**（以 193 仿真实测为准）：\n"
-          "> - **tilt 0-30°**：外桨 49.5kW、内桨 38.5kW——外桨仍在满推（垂起升力未退），内桨开始倾转推进。\n"
-          "> - **tilt 30-45°**：外桨 59.6kW、内桨 43.2kW——两桨叠加，此段功率最高（均值 102.8kW）。\n"
-          "> - **tilt 45-60°**：卡住等空速（~18s），外桨 39.9kW 衰减、内桨 36.3kW，功率 76kW。\n"
-          "> - **tilt 60-90°**：外桨 23.8kW、内桨 24.0kW，继续衰减，到 tilt=90（前飞）外桨最终 SHUTDOWN 归 0。\n"
-          "> - 即外桨在 transition 段是**从满推随 tilt 单调衰减到 0**，符合物理：tilt 涨则外桨垂直分量衰减。\n"
-          "> 对照：vtol_climb 段（tilt=0 垂起）外桨满推 51.8kW；FW 巡航段（tilt=90）外桨=0。\n"
-          "> 注：早期版本曾因 rotor.log 与 BIN 时间轴错配（追加写叠加多趟）误判'tilt 0-45° 外桨=0'，"
-          "已修复脚本取最后一趟飞行后数据正确。")
+        A("\n> 这些切片来自本次 BIN 对应的最新电机表；不要与旧日志的切片数值混用。")
+
+    A("\n## 10. 已知局限\n")
+    A("- velin>50 时 `prop40_power` 钳到 50 分支（`SIM_MotorTable.h:210`），巡航来流>50 段功率为下界估计")
+    A("- 表在 ~398 V 标定，未建模电压跌落（满载 sag ~0.8%，见 `df200_motor_data.md` §3.4）")
+    A("- 功率未做空气密度修正（SITL `Motor::calculate_forces` 对推力做 ρ 缩放，功率用表值，与内部一致）")
+    A("- 短段（过渡 ~3-5s）p95 比 peak 更稳健，peak 易被单拍噪声拉高")
+    A(f"- 图表功率经 {args.smooth}s 滑动平均滤波（`--smooth` 可调，0=关闭）")
 
     # ---- plots (matplotlib PNG) ----
     if series is not None and not args.no_plot:
-        from pathlib import Path
         report_dir = Path(args.report).resolve().parent
         img_dir = report_dir / 'df200_power_imgs'
         plots = make_plots(series, phase_list, edges.get('tilt_series'),
                            str(img_dir), args.smooth)
-        A("\n## 10. 功率曲线图（matplotlib，滤波后）\n")
+        A("\n## 11. 功率曲线图（matplotlib，滤波后）\n")
         A("> 图片以 base64 内嵌，单文件可直接发送查看，不依赖外部路径。\n")
         import base64
         for title, path in plots:
