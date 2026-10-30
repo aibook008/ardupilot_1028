@@ -1,6 +1,7 @@
 # DF-200 tiltrotor SITL model — Excel-faithful test build
 # Geometry/I/CG: docs/数据库_v2.xlsx (旋翼位置垂起行, 基本信息)
-# Power: xlsx 动力参数 + docs/电机电池.docx (外60桨峰值~1379N, 内40@3600RPM=540N)
+# Power: 165M20/135M10 bench data (docs/df200_motor_data_bench.md) + docs/电机电池.docx
+# (外60桨现用165M20实测表: 峰值1106N@3150rpm; 内40桨docx表1风洞, "拉力"列为N)
 # Layout: inner 4 tilting + outer 4 fixed vertical. Same motor order as JT-20 / Lua.
 #
 # Structure frame (S): nose origin, X aft, Y right, Z up.
@@ -16,8 +17,14 @@
 # "works well"; see docs/df200_model_alignment_plan.md §1.2. Parm gains were
 # restored from 086 against THIS Excel set, so json and parm are consistent again.)
 #
-# Thrust: peak Σ ≈ 4*1379 + 4*540 = 7676 N → T/W@380 ≈ 2.06
-# hoverThrOut=0.30 → T_max_model = mass_json*g/0.30 ≈ 8.28 kN → T/W_flight≈2.22
+# Thrust (2026-10-29): the table path (SIM_MotorTable.h, active for this frame)
+# does NOT use hoverThrOut/refCurrent/propExpo/disc_area — those only feed the
+# MOMENTUM derivation chain in SIM_Frame.cpp. Table-path hover point, measured
+# bench basis: 380 kg → ~2458 rpm, ~75 kW, cmd≈0.63 (outer 165M20) / 0.65
+# (inner 135M10); peak 4*1106+4*385 ≈ 5963 N → T/W@380 ≈ 1.60. See
+# docs/df200_hover_corridor_bench_derivation.md and docs/df200_motor_data_bench.md.
+# MOMENTUM-path legacy values (kept unchanged): peak Σ ≈ 4*1379 + 4*540 = 7676 N,
+# hoverThrOut=0.30 → T_max_model ≈ 8.28 kN → T/W_flight≈2.22.
 
 {
     "mass" : 253.333,
