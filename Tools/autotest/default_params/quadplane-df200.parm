@@ -69,7 +69,7 @@ Q_A_RAT_PIT_P    8.0
 Q_A_RAT_PIT_I    0.01
 Q_A_RAT_PIT_D    0.05
 
-Q_A_RAT_RLL_P    8.0
+Q_A_RAT_RLL_P    1.0
 Q_A_RAT_RLL_I    0.01
 Q_A_RAT_RLL_D    0.05
 
